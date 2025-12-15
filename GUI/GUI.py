@@ -1,0 +1,6369 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog, colorchooser
+from tkinter import Menu, Canvas, Text, Scrollbar
+import threading
+from datetime import datetime, date, timedelta
+import pandas as pd
+import numpy as np
+import time
+import os
+import re
+
+# Import dine funktioner fra Heavens-Above koden
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.chrome.service import Service
+    from bs4 import BeautifulSoup
+    try:
+        from webdriver_manager.chrome import ChromeDriverManager
+        WEBDRIVER_MANAGER_AVAILABLE = True
+    except ImportError:
+        WEBDRIVER_MANAGER_AVAILABLE = False
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
+    WEBDRIVER_MANAGER_AVAILABLE = False
+    
+import re
+import requests
+
+# Import leapfrog funktioner
+try:
+    from Func_fagprojekt import calculate_satellite_data, ra_dec_to_eci
+    from skyfield.api import Topos, load, EarthSatellite
+    SKYFIELD_AVAILABLE = True
+except ImportError:
+    SKYFIELD_AVAILABLE = False
+
+# Import til plotly plots
+try:
+    import plotly.graph_objects as go
+    import plotly.offline as pyo
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+
+# Import til PWI4 teleskop kontrol (erstatter ASCOM)
+try:
+    from pwi4_client import PWI4Telescope
+    from astropy.io import fits
+    PWI4_AVAILABLE = True
+except ImportError:
+    PWI4_AVAILABLE = False
+
+# Import Moravian kamera support
+try:
+    from moravian_camera_official import MoravianCameraOfficial
+    MORAVIAN_AVAILABLE = True
+except ImportError:
+    MORAVIAN_AVAILABLE = False
+
+# Import til billede analyse
+try:
+    from skimage import morphology
+    import cv2
+    from scipy.ndimage import zoom, label, find_objects
+    from scipy.ndimage import zoom
+    import subprocess
+    from tqdm import tqdm
+    from matplotlib.patches import Circle
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from PIL import Image, ImageTk
+    plt.ioff()  # Turn off interactive mode for GUI integration
+    SKIMAGE_AVAILABLE = True
+except ImportError:
+    SKIMAGE_AVAILABLE = False
+    plt = None
+    FigureCanvasTkAgg = None
+
+# Import til TLE beregning (orbdtools)
+try:
+    from orbdtools import ArcObs, Body, KeprvTrans
+    from astropy.time import Time
+    ORBDTOOLS_AVAILABLE = True
+except ImportError:
+    ORBDTOOLS_AVAILABLE = False
+
+class TkinterDemo:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Denassi - Specialkursus 2025")
+        self.root.geometry("1200x800")
+        
+        # Satelit data variabler
+        self.df_merged = None
+        self.df_heavens = None
+        
+        # LeapFrog variabler
+        self.df_leapfrog = None
+        self.leapfrog_observation_running = False
+        self.stop_observation = False
+        
+        # Tracking variabler
+        self.tracking_running = False
+        self.stop_tracking = False
+        self.selected_tracking_satellite = None
+        self.tracking_base_url = "http://localhost:8220"
+        
+        # Billede analyse variabler
+        self.image_analysis_running = False
+        self.stop_image_analysis = False
+        self.analysis_directory = None
+        self.tracking_pixelsum_radius = tk.IntVar(value=50)
+        
+        # Beregn TLE variabler
+        self.tle_calculation_data = None
+        self.tle_csv_directory = None
+        self.tle_plot_figure = None
+        self.tle_csv_data = None  # DataFrame med indlæst CSV data
+        self.tle_result = None  # Resultat fra TLE beregning
+        self.selected_indices = [0, 1, 2]  # Valgte indices til TLE beregning
+        
+        # Moravian kamera variabler
+        self.moravian_camera = None
+        self.camera_connected = False
+        self.camera_gain = tk.IntVar(value=1)
+        self.camera_binning_x = tk.IntVar(value=2)
+        self.camera_binning_y = tk.IntVar(value=2)
+        self.selected_filter = tk.StringVar()
+        
+        # PWI4 teleskop
+        self.pwi4_client = None
+        self.pw4_url = "http://localhost:8220"
+        
+        # UR VARIABEL
+        self.clock_var = tk.StringVar()
+        
+        self.create_menu()
+        self.create_widgets()
+        self.update_clock()  # Start uret
+        
+    def create_menu(self):
+        """Opretter menubar"""
+        menubar = Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # File menu
+        file_menu = Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="Open", command=self.open_file)
+        file_menu.add_command(label="Save", command=self.save_file)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
+        
+        # Om menu
+        help_menu = Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Om", menu=help_menu)
+        help_menu.add_command(label="Om denne applikation", command=self.show_about)
+    
+    def create_widgets(self):
+        """Opretter alle widgets"""
+        
+        # UR I TOPPEN AF PROGRAMMET - SYNLIGT PÅ ALLE TABS
+        top_frame = ttk.Frame(self.root)
+        top_frame.pack(fill='x', padx=10, pady=5)
+        
+        # Titel til venstre
+        title_label = ttk.Label(top_frame, text="Satellite Tracking System", font=('Arial', 14, 'bold'))
+        title_label.pack(side='left')
+        
+        # Ur til højre
+        clock_label = ttk.Label(
+            top_frame, 
+            textvariable=self.clock_var, 
+            font=('Arial', 14, 'bold'),
+            foreground='darkblue'
+        )
+        clock_label.pack(side='right')
+        
+        ttk.Label(top_frame, text="Tid:", font=('Arial', 10)).pack(side='right', padx=(0, 5))
+        
+        # Separator linje
+        separator = ttk.Separator(self.root, orient='horizontal')
+        separator.pack(fill='x', padx=10, pady=5)
+        
+        # Hovedcontainer med tabs
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Tab 1: Kameraindstillinger
+        self.create_kameraindstillinger_tab(notebook)
+        
+        # Tab 2: Hent Satelitlister
+        self.create_satellite_tab(notebook)
+        
+        # Tab 3: LeapFrog Observation
+        self.create_leapfrog_tab(notebook)
+        
+        # Tab 4: Tracking Observation
+        self.create_tracking_tab(notebook)
+        
+        # Tab 5: Billede Analyse
+        self.create_image_analysis_tab(notebook)
+        
+        # Tab 6: Beregn TLE
+        self.create_calculate_tle_tab(notebook)
+    
+    def update_clock(self):
+        """Opdaterer uret og farvekodning hvert sekund"""
+        current_time = datetime.now().strftime('%H:%M:%S')
+        self.clock_var.set(current_time)
+        
+        # Opdater farvekodning hvis vi har satelitdata
+        if self.df_merged is not None:
+            self.update_satellite_colors()
+        
+        # Planlæg næste opdatering om 1000ms (1 sekund)
+        self.root.after(1000, self.update_clock)
+    
+    def update_satellite_colors(self):
+        """Opdaterer kun farvekodningen uden at genopbygge hele listen"""
+        if self.df_merged is None:
+            return
+            
+        selected_date = self.date_entry.get()
+        
+        # Gennemgå alle eksisterende rækker i treeview
+        for item in self.satellite_tree.get_children():
+            values = self.satellite_tree.item(item, 'values')
+            if len(values) >= 5:  # Sikr at vi har start og end tid
+                start_time = values[2]  # StartTime kolonne
+                end_time = values[4]    # EndTime kolonne
+                
+                # Beregn ny status
+                status = self.get_satellite_status(start_time, end_time, selected_date)
+                
+                # Opdater farvetag for denne række
+                self.satellite_tree.item(item, tags=(status,))
+    
+    def sort_dataframe_by_starttime(self, df):
+        """Sorterer DataFrame efter StartTime"""
+        if df is None or df.empty:
+            return df
+            
+        try:
+            # Konverter StartTime til datetime for korrekt sortering
+            df_sorted = df.copy()
+            
+            # Sikr at StartTime eksisterer
+            if 'StartTime' in df_sorted.columns:
+                # Konverter til datetime objekt for korrekt sortering - prøv først med sekunder, derefter uden
+                df_sorted['StartTime_dt'] = pd.to_datetime(df_sorted['StartTime'], format='%H:%M:%S', errors='coerce')
+                # Hvis parsing fejlede (NaT værdier), prøv uden sekunder
+                if df_sorted['StartTime_dt'].isna().all():
+                    df_sorted['StartTime_dt'] = pd.to_datetime(df_sorted['StartTime'], format='%H:%M', errors='coerce')
+                
+                # Sorter efter tiden
+                df_sorted = df_sorted.sort_values('StartTime_dt')
+                
+                # Fjern hjælpekolonnen
+                df_sorted = df_sorted.drop(columns=['StartTime_dt'])
+                
+                # Reset index
+                df_sorted = df_sorted.reset_index(drop=True)
+                
+            return df_sorted
+            
+        except Exception as e:
+            print(f"Fejl ved sortering: {e}")
+            return df
+    
+    def create_kameraindstillinger_tab(self, notebook):
+        """Tab til kameraindstillinger"""
+        kameraindstillinger_frame = ttk.Frame(notebook)
+        notebook.add(kameraindstillinger_frame, text="Kameraindstillinger")
+        
+        # Opret to kolonner: venstre for widgets, højre for log
+        main_container = ttk.Frame(kameraindstillinger_frame)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        left_frame = ttk.Frame(main_container)
+        left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+        
+        right_frame = ttk.Frame(main_container) 
+        right_frame.pack(side='right', fill='both', expand=False, padx=(5, 0))
+        
+        # Kamera kontrol sektion (venstre side)
+        camera_frame = ttk.LabelFrame(left_frame, text="Kamera Kontrol (Moravian)")
+        camera_frame.pack(fill='x', pady=(0, 10))
+        
+        # Kamera status og forbindelse
+        camera_status_frame = ttk.Frame(camera_frame)
+        camera_status_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(camera_status_frame, text="Status:", font=('Arial', 10, 'bold')).pack(side='left')
+        self.camera_status_label = ttk.Label(camera_status_frame, text="Ikke tilsluttet", foreground='red')
+        self.camera_status_label.pack(side='left', padx=(5, 0))
+        
+        # Connection knapper
+        conn_frame = ttk.Frame(camera_frame)
+        conn_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Button(conn_frame, text="Tilslut Kamera", 
+                  command=self.connect_camera).pack(side='left', padx=5)
+        ttk.Button(conn_frame, text="Afbryd Kamera", 
+                  command=self.disconnect_camera).pack(side='left', padx=5)
+        ttk.Button(conn_frame, text="Opdater Info", 
+                  command=self.update_camera_info).pack(side='left', padx=5)
+        ttk.Button(conn_frame, text="Tag Testbillede", 
+                  command=self.take_test_image).pack(side='left', padx=5)
+        
+        # Temperatur visning (kun læsning - ikke styring)
+        temp_frame = ttk.LabelFrame(camera_frame, text="Temperatur Visning")
+        temp_frame.pack(fill='x', padx=5, pady=5)
+        
+        temp_display_frame = ttk.Frame(temp_frame)
+        temp_display_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(temp_display_frame, text="Nuværende temperatur:").grid(row=0, column=0, sticky='w', padx=5)
+        self.current_temp_label = ttk.Label(temp_display_frame, text="N/A", foreground='blue', font=('Arial', 10, 'bold'))
+        self.current_temp_label.grid(row=0, column=1, sticky='w', padx=10)
+        
+        # Info label om ekstern temperaturstyring
+        ttk.Label(temp_display_frame, text="Temperaturstyring håndteres af ekstern software", 
+                 foreground='gray', font=('Arial', 8)).grid(row=1, column=0, columnspan=2, sticky='w', padx=5, pady=(5, 0))
+        
+        # Gain kontrol
+        gain_frame = ttk.LabelFrame(camera_frame, text="Gain Kontrol")
+        gain_frame.pack(fill='x', padx=5, pady=5)
+        
+        gain_control_frame = ttk.Frame(gain_frame)
+        gain_control_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(gain_control_frame, text="Gain:").grid(row=0, column=0, sticky='w', padx=5)
+        
+        # Gain slider
+        self.gain_scale = ttk.Scale(gain_control_frame, from_=0, to=100, 
+                                   variable=self.camera_gain, orient='horizontal', length=200)
+        self.gain_scale.grid(row=0, column=1, sticky='ew', padx=5)
+        
+        # Gain value labels
+        self.gain_value_label = ttk.Label(gain_control_frame, text="0")
+        self.gain_value_label.grid(row=0, column=2, padx=5)
+        
+        # Manual gain entry
+        ttk.Label(gain_control_frame, text="Manual:").grid(row=0, column=3, sticky='w', padx=(20, 5))
+        self.manual_gain_entry = ttk.Entry(gain_control_frame, width=8)
+        self.manual_gain_entry.grid(row=0, column=4, padx=5)
+        
+        ttk.Button(gain_control_frame, text="Sæt Gain", 
+                  command=self.set_camera_gain).grid(row=0, column=5, padx=10)
+        
+        gain_control_frame.grid_columnconfigure(1, weight=1)
+        
+        # Bind slider til label opdatering
+        self.gain_scale.configure(command=self.update_gain_label)
+        
+        # Initialiser gain label med standardværdi
+        self.update_gain_label(self.camera_gain.get())
+        
+        # Binning kontrol
+        binning_frame = ttk.LabelFrame(camera_frame, text="Binning Kontrol")
+        binning_frame.pack(fill='x', padx=5, pady=5)
+        
+        binning_control_frame = ttk.Frame(binning_frame)
+        binning_control_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(binning_control_frame, text="X-Binning:").grid(row=0, column=0, sticky='w', padx=5)
+        x_binning_spinbox = ttk.Spinbox(binning_control_frame, from_=1, to=8, 
+                                       textvariable=self.camera_binning_x, width=5)
+        x_binning_spinbox.grid(row=0, column=1, padx=5)
+        
+        ttk.Label(binning_control_frame, text="Y-Binning:").grid(row=0, column=2, sticky='w', padx=(20, 5))
+        y_binning_spinbox = ttk.Spinbox(binning_control_frame, from_=1, to=8, 
+                                       textvariable=self.camera_binning_y, width=5)
+        y_binning_spinbox.grid(row=0, column=3, padx=5)
+        
+        ttk.Button(binning_control_frame, text="Sæt Binning", 
+                  command=self.set_camera_binning).grid(row=0, column=4, padx=10)
+        
+        # Filter kontrol
+        filter_frame = ttk.LabelFrame(camera_frame, text="Filter Kontrol")
+        filter_frame.pack(fill='x', padx=5, pady=5)
+        
+        filter_control_frame = ttk.Frame(filter_frame)
+        filter_control_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(filter_control_frame, text="Filter:").grid(row=0, column=0, sticky='w', padx=5)
+        self.filter_combo = ttk.Combobox(filter_control_frame, textvariable=self.selected_filter, 
+                                        state='readonly', width=25)
+        self.filter_combo.grid(row=0, column=1, sticky='ew', padx=5)
+        
+        ttk.Button(filter_control_frame, text="Sæt Filter", 
+                  command=self.set_camera_filter).grid(row=0, column=2, padx=10)
+        
+        filter_control_frame.grid_columnconfigure(1, weight=1)
+        
+        # Kamera log sektion (højre side)
+        camera_log_frame = ttk.LabelFrame(right_frame, text="Kamera Log")
+        camera_log_frame.pack(fill='both', expand=True)
+        
+        # Sæt en passende bredde på log området
+        right_frame.configure(width=420)
+        right_frame.pack_propagate(False)
+        
+        # Log text widget med scrollbar
+        camera_log_container = ttk.Frame(camera_log_frame)
+        camera_log_container.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.camera_log_text = tk.Text(camera_log_container, width=52, wrap='word')
+        camera_log_scrollbar = ttk.Scrollbar(camera_log_container, orient='vertical', command=self.camera_log_text.yview)
+        self.camera_log_text.configure(yscrollcommand=camera_log_scrollbar.set)
+        
+        camera_log_scrollbar.pack(side='right', fill='y')
+        self.camera_log_text.pack(side='left', fill='both', expand=True)
+        
+        # Clear log button
+        ttk.Button(camera_log_frame, text="Ryd Log", 
+                  command=lambda: self.camera_log_text.delete(1.0, tk.END)).pack(pady=2)
+        
+        # Tilføj en velkomst besked til kamera loggen
+        self.camera_log_text.insert(tk.END, "Kamera Log startet...\n")
+        self.camera_log_text.insert(tk.END, "Klar til kamera operationer.\n\n")
+    
+    def create_satellite_tab(self, notebook):
+        """Tab til at hente satelitlister"""
+        satellite_frame = ttk.Frame(notebook)
+        notebook.add(satellite_frame, text="Hent Satelitlister")
+        
+        # Hovedcontainer
+        main_container = ttk.Frame(satellite_frame)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Øvre sektion med to kolonner
+        top_frame = ttk.Frame(main_container)
+        top_frame.pack(fill='x', pady=(0, 10))
+        
+        # Øvre venstre: Input sektion 
+        left_frame = ttk.Frame(top_frame)
+        left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+        
+        # Øvre højre: Log sektion
+        right_frame = ttk.Frame(top_frame) 
+        right_frame.pack(side='right', fill='both', expand=False, padx=(5, 0))
+        
+        # Sæt en fast bredde på log området (1/3 af vinduet ≈ 400px)
+        right_frame.configure(width=400)
+        right_frame.pack_propagate(False)
+        
+        # Input sektion (øvre venstre)
+        input_frame = ttk.LabelFrame(left_frame, text="Søgekriterier")
+        input_frame.pack(fill='both', expand=True)
+        
+        # Lokation inputs
+        ttk.Label(input_frame, text="Breddegrad:").grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        self.lat_entry = ttk.Entry(input_frame, width=15)
+        self.lat_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.lat_entry.insert(0, "66.996007")
+        
+        ttk.Label(input_frame, text="Længdegrad:").grid(row=0, column=2, sticky='w', padx=5, pady=5)
+        self.lng_entry = ttk.Entry(input_frame, width=15)
+        self.lng_entry.grid(row=0, column=3, padx=5, pady=5)
+        self.lng_entry.insert(0, "-50.621153")
+        
+        ttk.Label(input_frame, text="Højde (m):").grid(row=1, column=0, sticky='w', padx=5, pady=5)
+        self.ele_entry = ttk.Entry(input_frame, width=15)
+        self.ele_entry.grid(row=1, column=1, padx=5, pady=5)
+        self.ele_entry.insert(0, "313")
+        
+        # Dato input
+        ttk.Label(input_frame, text="Dato (YYYY-MM-DD):").grid(row=1, column=2, sticky='w', padx=5, pady=5)
+        self.date_entry = ttk.Entry(input_frame, width=15)
+        self.date_entry.grid(row=1, column=3, padx=5, pady=5)
+        self.date_entry.insert(0, datetime.now().strftime('%Y-%m-%d'))
+        
+        # UTC Offset input
+        ttk.Label(input_frame, text="UTC Offset (timer):").grid(row=1, column=4, sticky='w', padx=5, pady=5)
+        self.utc_offset_entry = ttk.Entry(input_frame, width=10)
+        self.utc_offset_entry.grid(row=1, column=5, padx=5, pady=5)
+        self.utc_offset_entry.insert(0, "-2")  # Standard dansk tid
+        
+        # Periode valg
+        ttk.Label(input_frame, text="Periode:").grid(row=2, column=0, sticky='w', padx=5, pady=5)
+        self.period_combo = ttk.Combobox(input_frame, values=['morning', 'evening'], state="readonly", width=12)
+        self.period_combo.grid(row=2, column=1, padx=5, pady=5)
+        self.period_combo.set('evening')
+        
+        # Space-Track login
+        login_frame = ttk.LabelFrame(input_frame, text="Space-Track Login")
+        login_frame.grid(row=3, column=0, columnspan=6, sticky='ew', padx=5, pady=5)
+        
+        ttk.Label(login_frame, text="Username:").grid(row=0, column=0, sticky='w', padx=5, pady=2)
+        self.username_entry = ttk.Entry(login_frame, width=25)
+        self.username_entry.grid(row=0, column=1, padx=5, pady=2)
+        self.username_entry.insert(0, "Sophienlund37@gmail.com")  # Standard brugernavn
+        
+        ttk.Label(login_frame, text="Password:").grid(row=0, column=2, sticky='w', padx=5, pady=2)
+        self.password_entry = ttk.Entry(login_frame, width=25, show="*")
+        self.password_entry.grid(row=0, column=3, padx=5, pady=2)
+        self.password_entry.insert(0, "Denassi2025ViggoVictor")  # Standard adgangskode
+        
+        button_frame = ttk.Frame(input_frame)
+        button_frame.grid(row=4, column=0, columnspan=6, pady=10)
+
+        ttk.Button(button_frame, text="Hent Fra Internet", command=self.fetch_satellites_threaded).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Åbn CSV-fil", command=self.load_csv_file).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Gem Liste", command=self.save_satellite_list).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Ryd Liste", command=self.clear_satellite_list).pack(side='left', padx=5)
+
+        # Progress bar
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(input_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.grid(row=5, column=0, columnspan=6, sticky='ew', padx=5, pady=5)
+        
+        # Farvelegenda sektion
+        legend_frame = ttk.LabelFrame(input_frame, text="Farvelegenda (opdateres automatisk)")
+        legend_frame.grid(row=6, column=0, columnspan=6, sticky='ew', padx=5, pady=5)
+        
+        ttk.Label(legend_frame, text="🔴 Passeret (EndTime overskredet)", foreground='red').grid(row=0, column=0, sticky='w', padx=5, pady=2)
+        ttk.Label(legend_frame, text="🟡 Starter snart (StartTime inden for 5 min)", foreground='orange').grid(row=0, column=1, sticky='w', padx=5, pady=2)
+        ttk.Label(legend_frame, text="🟢 Aktiv nu (mellem StartTime og EndTime)", foreground='green').grid(row=0, column=2, sticky='w', padx=5, pady=2)
+        
+        # Satelit log sektion (øvre højre hjørne)
+        satellite_log_frame = ttk.LabelFrame(right_frame, text="Satelit Hentning Log")
+        satellite_log_frame.pack(fill='both', expand=True)
+        
+        # Log text widget med scrollbar
+        satellite_log_container = ttk.Frame(satellite_log_frame)
+        satellite_log_container.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.satellite_log_text = tk.Text(satellite_log_container, height=8, wrap='word')
+        satellite_log_scrollbar = ttk.Scrollbar(satellite_log_container, orient='vertical', command=self.satellite_log_text.yview)
+        self.satellite_log_text.configure(yscrollcommand=satellite_log_scrollbar.set)
+        
+        satellite_log_scrollbar.pack(side='right', fill='y')
+        self.satellite_log_text.pack(side='left', fill='both', expand=True)
+        
+        # Clear log button
+        ttk.Button(satellite_log_frame, text="Ryd Log", 
+                  command=lambda: self.satellite_log_text.delete(1.0, tk.END)).pack(pady=2)
+        
+        # Tilføj en velkomst besked til satelit loggen
+        self.satellite_log_text.insert(tk.END, "Satelit Log startet...\n")
+        self.satellite_log_text.insert(tk.END, "Klar til at hente satelitdata.\n\n")
+        
+        # Resultat sektion (fuld bredde i bunden)
+        result_frame = ttk.LabelFrame(main_container, text="Satelitliste (sorteret efter starttid)")
+        result_frame.pack(fill='both', expand=True)
+        
+        # Treeview til at vise resultater
+        columns = ('SatName', 'NORAD', 'StartTime', 'HiTime', 'EndTime', 'HiAlt', 'Magnitude', 'TLE1', 'TLE2')
+        self.satellite_tree = ttk.Treeview(result_frame, columns=columns, show='headings', height=15)
+        
+        # Definer kolonner
+        column_widths = {'SatName': 150, 'NORAD': 80, 'StartTime': 80, 'HiTime': 80, 
+                        'EndTime': 80, 'HiAlt': 60, 'Magnitude': 80, 'TLE1': 200, 'TLE2': 200}
+        
+        for col in columns:
+            self.satellite_tree.heading(col, text=col)
+            self.satellite_tree.column(col, width=column_widths.get(col, 100))
+        
+        # Konfigurer farvetags for treeview
+        self.satellite_tree.tag_configure('passed', background='#ffcccc')  # Lyserød for passeret
+        self.satellite_tree.tag_configure('starting_soon', background='#ffffcc')  # Lysegul for starter snart
+        self.satellite_tree.tag_configure('active', background='#ccffcc')  # Lysegrøn for aktiv
+        self.satellite_tree.tag_configure('normal', background='white')  # Normal baggrund
+        
+        # Scrollbars for treeview
+        tree_v_scrollbar = ttk.Scrollbar(result_frame, orient='vertical', command=self.satellite_tree.yview)
+        tree_h_scrollbar = ttk.Scrollbar(result_frame, orient='horizontal', command=self.satellite_tree.xview)
+        self.satellite_tree.configure(yscrollcommand=tree_v_scrollbar.set, xscrollcommand=tree_h_scrollbar.set)
+        
+        # Pack treeview og scrollbars
+        tree_v_scrollbar.pack(side='right', fill='y')
+        tree_h_scrollbar.pack(side='bottom', fill='x')
+        self.satellite_tree.pack(side='left', fill='both', expand=True)
+        
+        # Status label (nederst ved satelitlisten)
+        self.status_label = ttk.Label(main_container, text="Klar til at hente satelitdata...")
+        self.status_label.pack(pady=5)
+    
+    def create_leapfrog_tab(self, notebook):
+        """Tab til LeapFrog observation"""
+        leapfrog_frame = ttk.Frame(notebook)
+        notebook.add(leapfrog_frame, text="LeapFrog Observation")
+        
+        # Opret en canvas og scrollbar for at gøre indholdet scrollbart
+        canvas = tk.Canvas(leapfrog_frame)
+        v_scrollbar = ttk.Scrollbar(leapfrog_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=v_scrollbar.set)
+        
+        # Tilføj mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        
+        # Pack canvas og scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        v_scrollbar.pack(side="right", fill="y")
+        
+        # Nu brug scrollable_frame som container i stedet for leapfrog_frame
+        main_container = ttk.Frame(scrollable_frame)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Opret to kolonner: venstre for widgets, højre for log
+        left_frame = ttk.Frame(main_container)
+        left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+        
+        right_frame = ttk.Frame(main_container) 
+        right_frame.pack(side='right', fill='both', expand=False, padx=(5, 0))
+        
+        # Satelit valg sektion (venstre side)
+        selection_frame = ttk.LabelFrame(left_frame, text="Satelit Valg")
+        selection_frame.pack(fill='x', pady=(0, 10))
+        
+        ttk.Label(selection_frame, text="Vælg en satellit fra listen i 'Hent Satelitlister' fanen").pack(pady=5)
+        
+        button_frame = ttk.Frame(selection_frame)
+        button_frame.pack(pady=5)
+        
+        ttk.Button(button_frame, text="Hent Valgt Satelitt", 
+                  command=self.get_selected_satellite).pack(side='left', padx=5)
+        ttk.Button(button_frame, text="Beregn LeapFrog Data", 
+                  command=self.calculate_leapfrog_data).pack(side='left', padx=5)
+        
+        # Satelit info display
+        info_frame = ttk.LabelFrame(selection_frame, text="Valgt Satelit Info")
+        info_frame.pack(fill='x', pady=5)
+        
+        self.sat_info_text = tk.Text(info_frame, height=3, wrap='word')
+        self.sat_info_text.pack(fill='x', padx=5, pady=5)
+        
+        # Data tabel sektion (venstre side)
+        table_frame = ttk.LabelFrame(left_frame, text="LeapFrog Observationsdata")
+        table_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        # Treeview til at vise leapfrog data
+        leapfrog_columns = ('DATE-OBS', 'Sat_DEC', 'Sat_RA_Hr', 'Sat_Alt', 'Sat_Az')
+        self.leapfrog_tree = ttk.Treeview(table_frame, columns=leapfrog_columns, show='headings', height=10)
+        
+        # Definer kolonner med optimerede bredder
+        column_widths_leapfrog = {
+            'DATE-OBS': 160,
+            'Sat_DEC': 120,
+            'Sat_RA_Hr': 120,
+            'Sat_Alt': 100,
+            'Sat_Az': 100
+        }
+        for col in leapfrog_columns:
+            self.leapfrog_tree.heading(col, text=col)
+            self.leapfrog_tree.column(col, width=column_widths_leapfrog.get(col, 100))
+        
+        # Scrollbars for leapfrog treeview
+        leapfrog_v_scrollbar = ttk.Scrollbar(table_frame, orient='vertical', command=self.leapfrog_tree.yview)
+        leapfrog_h_scrollbar = ttk.Scrollbar(table_frame, orient='horizontal', command=self.leapfrog_tree.xview)
+        self.leapfrog_tree.configure(yscrollcommand=leapfrog_v_scrollbar.set, xscrollcommand=leapfrog_h_scrollbar.set)
+        
+        # Pack treeview og scrollbars
+        leapfrog_v_scrollbar.pack(side='right', fill='y')
+        leapfrog_h_scrollbar.pack(side='bottom', fill='x')
+        self.leapfrog_tree.pack(side='left', fill='both', expand=True)
+        
+        # Plot sektion (venstre side)
+        if PLOTLY_AVAILABLE:
+            plot_frame = ttk.LabelFrame(left_frame, text="3D Plot")
+            plot_frame.pack(fill='x', pady=(0, 10))
+            
+            ttk.Button(plot_frame, text="Vis 3D Plot", 
+                      command=self.show_leapfrog_plot).pack(pady=5)
+        
+        # Observation control sektion (venstre side)
+        control_frame = ttk.LabelFrame(left_frame, text="Observation Control")
+        control_frame.pack(fill='x', pady=(0, 10))
+        
+        # Parameter frame
+        params_frame = ttk.LabelFrame(control_frame, text="Observation Parametre")
+        params_frame.pack(fill='x', padx=5, pady=5)
+        
+        # PWI4 URL
+        ttk.Label(params_frame, text="PWI4 URL:").grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        self.leapfrog_pw4_url_entry = ttk.Entry(params_frame, width=30)
+        self.leapfrog_pw4_url_entry.grid(row=0, column=1, columnspan=3, padx=5, pady=5)
+        self.leapfrog_pw4_url_entry.insert(0, "http://localhost:8220")
+        
+        # Timing parametre (binning styres nu fra kameraindstillinger)
+        ttk.Label(params_frame, text="Exposure time (s):").grid(row=1, column=0, sticky='w', padx=5, pady=5)
+        self.leapfrog_exposure_time_entry = ttk.Entry(params_frame, width=10)
+        self.leapfrog_exposure_time_entry.grid(row=1, column=1, padx=5, pady=5)
+        self.leapfrog_exposure_time_entry.insert(0, "1.0")
+        
+        ttk.Label(params_frame, text="Tid mellem obs (s):").grid(row=1, column=2, sticky='w', padx=5, pady=5)
+        self.leapfrog_interval_entry = ttk.Entry(params_frame, width=10)
+        self.leapfrog_interval_entry.grid(row=1, column=3, padx=5, pady=5)
+        self.leapfrog_interval_entry.insert(0, "15.0")
+        
+        # Kamera timing parametre
+        ttk.Label(params_frame, text="Kamera start før (s):").grid(row=2, column=0, sticky='w', padx=5, pady=5)
+        self.leapfrog_camera_start_entry = ttk.Entry(params_frame, width=10)
+        self.leapfrog_camera_start_entry.grid(row=2, column=1, padx=5, pady=5)
+        self.leapfrog_camera_start_entry.insert(0, "2.0")
+        
+        ttk.Label(params_frame, text="Kamera stop efter (s):").grid(row=2, column=2, sticky='w', padx=5, pady=5)
+        self.leapfrog_camera_stop_entry = ttk.Entry(params_frame, width=10)
+        self.leapfrog_camera_stop_entry.grid(row=2, column=3, padx=5, pady=5)
+        self.leapfrog_camera_stop_entry.insert(0, "2.0")
+        
+        ttk.Label(params_frame, text="Slew delay (s):").grid(row=3, column=0, sticky='w', padx=5, pady=5)
+        self.leapfrog_slew_delay_entry = ttk.Entry(params_frame, width=10)
+        self.leapfrog_slew_delay_entry.grid(row=3, column=1, padx=5, pady=5)
+        self.leapfrog_slew_delay_entry.insert(0, "0.5")
+        
+        # PWI4 status
+        if PWI4_AVAILABLE:
+            pwi4_status = "PWI4 bibliotek tilgængeligt"
+            status_color = 'green'
+        else:
+            pwi4_status = "ADVARSEL: PWI4 bibliotek ikke tilgængeligt"
+            status_color = 'orange'
+        
+        status_label = ttk.Label(control_frame, text=f"Status: {pwi4_status}")
+        status_label.pack(pady=2)
+        if not PWI4_AVAILABLE:
+            status_label.config(foreground='orange')
+        
+        # Control knapper
+        control_button_frame = ttk.Frame(control_frame)
+        control_button_frame.pack(pady=5)
+        
+        self.start_obs_btn = ttk.Button(control_button_frame, text="Start LeapFrog Observation", 
+                                       command=self.start_leapfrog_observation)
+        self.start_obs_btn.pack(side='left', padx=5)
+        
+        self.stop_obs_btn = ttk.Button(control_button_frame, text="Stop Observation", 
+                                      command=self.stop_leapfrog_observation, state='disabled')
+        self.stop_obs_btn.pack(side='left', padx=5)
+        
+        # Log sektion (højre side)
+        log_frame = ttk.LabelFrame(right_frame, text="Observation Log")
+        log_frame.pack(fill='both', expand=True)
+        
+        # Sæt en passende bredde på log området
+        right_frame.configure(width=420)
+        right_frame.pack_propagate(False)
+        
+        # Log text widget med scrollbar
+        log_container = ttk.Frame(log_frame)
+        log_container.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.log_text = tk.Text(log_container, width=52, wrap='word')
+        log_scrollbar = ttk.Scrollbar(log_container, orient='vertical', command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scrollbar.set)
+        
+        log_scrollbar.pack(side='right', fill='y')
+        self.log_text.pack(side='left', fill='both', expand=True)
+        
+        # Clear log button
+        ttk.Button(log_frame, text="Ryd Log", 
+                  command=lambda: self.log_text.delete(1.0, tk.END)).pack(pady=2)
+    
+    def create_tracking_tab(self, notebook):
+        """Tab til Tracking observation med PlaneWave4"""
+        tracking_frame = ttk.Frame(notebook)
+        notebook.add(tracking_frame, text="Tracking Observation")
+        
+        # Opret en canvas og scrollbar for at gøre indholdet scrollbart
+        canvas = tk.Canvas(tracking_frame)
+        v_scrollbar = ttk.Scrollbar(tracking_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=v_scrollbar.set)
+        
+        # Tilføj mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        
+        # Pack canvas og scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        v_scrollbar.pack(side="right", fill="y")
+        
+        # Nu brug scrollable_frame som container
+        main_container = ttk.Frame(scrollable_frame)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Opret to kolonner: venstre for widgets, højre for log
+        left_frame = ttk.Frame(main_container)
+        left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+        
+        right_frame = ttk.Frame(main_container) 
+        right_frame.pack(side='right', fill='both', expand=False, padx=(5, 0))
+        
+        # Satelit valg sektion (venstre side)
+        selection_frame = ttk.LabelFrame(left_frame, text="Satelit Valg")
+        selection_frame.pack(fill='x', pady=(0, 10))
+        
+        ttk.Label(selection_frame, text="Vælg en satelitt fra 'Hent Satelitlister' fanen for at starte tracking").pack(pady=5)
+        
+        button_frame = ttk.Frame(selection_frame)
+        button_frame.pack(pady=5)
+        
+        ttk.Button(button_frame, text="Hent Valgt Satelitt", 
+                  command=self.get_selected_satellite_for_tracking).pack(side='left', padx=5)
+        
+        # Satelit info display
+        info_frame = ttk.LabelFrame(selection_frame, text="Valgt Satelit Info")
+        info_frame.pack(fill='x', pady=5)
+        
+        self.tracking_sat_info_text = tk.Text(info_frame, height=3, wrap='word')
+        self.tracking_sat_info_text.pack(fill='x', padx=5, pady=5)
+        
+        # Tracking parametere sektion (venstre side)
+        params_frame = ttk.LabelFrame(left_frame, text="Tracking Parametre")
+        params_frame.pack(fill='x', pady=(0, 10))
+        
+        # Parameter inputs i grid layout
+        ttk.Label(params_frame, text="Exposure Time (sek):").grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        self.exposure_time_entry = ttk.Entry(params_frame, width=10)
+        self.exposure_time_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.exposure_time_entry.insert(0, "2.0")
+        
+        ttk.Label(params_frame, text="Interval mellem billeder (sek):").grid(row=0, column=2, sticky='w', padx=5, pady=5)
+        self.tracking_interval_entry = ttk.Entry(params_frame, width=10)
+        self.tracking_interval_entry.grid(row=0, column=3, padx=5, pady=5)
+        self.tracking_interval_entry.insert(0, "5.0")
+        
+        ttk.Label(params_frame, text="Antal billeder:").grid(row=1, column=0, sticky='w', padx=5, pady=5)
+        self.num_images_entry = ttk.Entry(params_frame, width=10)
+        self.num_images_entry.grid(row=1, column=1, padx=5, pady=5)
+        self.num_images_entry.insert(0, "10")
+        
+        ttk.Label(params_frame, text="PlaneWave4 URL:").grid(row=1, column=2, sticky='w', padx=5, pady=5)
+        self.pw4_url_entry = ttk.Entry(params_frame, width=20)
+        self.pw4_url_entry.grid(row=1, column=3, padx=5, pady=5)
+        self.pw4_url_entry.insert(0, "http://localhost:8220")
+        
+        # Test forbindelse knap (binning styres nu fra kameraindstillinger)
+        ttk.Button(params_frame, text="Test PlaneWave4 Forbindelse", 
+                  command=self.test_pw4_connection).grid(row=2, column=0, columnspan=2, pady=10, padx=5)
+        
+        # Status display
+        self.pw4_status_label = ttk.Label(params_frame, text="Status: Ikke testet", foreground='gray')
+        self.pw4_status_label.grid(row=3, column=2, columnspan=2, pady=10, padx=5, sticky='w')
+        
+        # Tracking control sektion (venstre side)
+        control_frame = ttk.LabelFrame(left_frame, text="Tracking Control")
+        control_frame.pack(fill='x', pady=(0, 10))
+        
+        control_button_frame = ttk.Frame(control_frame)
+        control_button_frame.pack(pady=10)
+        
+        self.start_tracking_btn = ttk.Button(control_button_frame, text="Start Tracking", 
+                                           command=self.start_tracking_observation)
+        self.start_tracking_btn.pack(side='left', padx=5)
+        
+        self.stop_tracking_btn = ttk.Button(control_button_frame, text="Stop Tracking", 
+                                          command=self.stop_tracking_observation, state='disabled')
+        self.stop_tracking_btn.pack(side='left', padx=5)
+        
+        # Manual TLE input sektion (venstre side)
+        manual_frame = ttk.LabelFrame(left_frame, text="Manuel TLE Input (valgfrit)")
+        manual_frame.pack(fill='x', pady=(0, 10))
+        
+        ttk.Label(manual_frame, text="Satellit navn:").grid(row=0, column=0, sticky='w', padx=5, pady=2)
+        self.manual_sat_name_entry = ttk.Entry(manual_frame, width=30)
+        self.manual_sat_name_entry.grid(row=0, column=1, padx=5, pady=2, sticky='ew')
+        
+        ttk.Label(manual_frame, text="TLE Line 1:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
+        self.manual_tle1_entry = ttk.Entry(manual_frame, width=70)
+        self.manual_tle1_entry.grid(row=1, column=1, padx=5, pady=2, sticky='ew')
+        
+        ttk.Label(manual_frame, text="TLE Line 2:").grid(row=2, column=0, sticky='w', padx=5, pady=2)
+        self.manual_tle2_entry = ttk.Entry(manual_frame, width=70)
+        self.manual_tle2_entry.grid(row=2, column=1, padx=5, pady=2, sticky='ew')
+        
+        manual_frame.grid_columnconfigure(1, weight=1)
+        
+        ttk.Button(manual_frame, text="Brug Manuel TLE", 
+                  command=self.use_manual_tle).grid(row=3, column=0, columnspan=2, pady=5)
+        
+        # Tracking log sektion (højre side)
+        log_frame = ttk.LabelFrame(right_frame, text="Tracking Log")
+        log_frame.pack(fill='both', expand=True)
+        
+        # Sæt en passende bredde på log området
+        right_frame.configure(width=420)
+        right_frame.pack_propagate(False)
+        
+        # Log text widget med scrollbar
+        log_container = ttk.Frame(log_frame)
+        log_container.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.tracking_log_text = tk.Text(log_container, width=52, wrap='word')
+        tracking_log_scrollbar = ttk.Scrollbar(log_container, orient='vertical', command=self.tracking_log_text.yview)
+        self.tracking_log_text.configure(yscrollcommand=tracking_log_scrollbar.set)
+        
+        tracking_log_scrollbar.pack(side='right', fill='y')
+        self.tracking_log_text.pack(side='left', fill='both', expand=True)
+        
+        # Clear log button
+        ttk.Button(log_frame, text="Ryd Log", 
+                  command=lambda: self.tracking_log_text.delete(1.0, tk.END)).pack(pady=2)
+    
+    def create_image_analysis_tab(self, notebook):
+        """Tab til Billede Analyse af LeapFrog og Tracking observationer"""
+        analysis_frame = ttk.Frame(notebook)
+        notebook.add(analysis_frame, text="Billede Analyse")
+        
+        # Opret en canvas og scrollbar for at gøre indholdet scrollbart
+        canvas = tk.Canvas(analysis_frame)
+        v_scrollbar = ttk.Scrollbar(analysis_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=v_scrollbar.set)
+        
+        # Tilføj mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        
+        # Pack canvas og scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        v_scrollbar.pack(side="right", fill="y")
+        
+        # Nu brug scrollable_frame som container
+        main_container = ttk.Frame(scrollable_frame)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Opret to kolonner: venstre for widgets, højre for log
+        left_frame = ttk.Frame(main_container)
+        left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+        
+        right_frame = ttk.Frame(main_container) 
+        right_frame.pack(side='right', fill='both', expand=False, padx=(5, 0))
+        
+        # Input sektion (venstre side)
+        input_frame = ttk.LabelFrame(left_frame, text="Analyse Indstillinger")
+        input_frame.pack(fill='x', pady=(0, 10))
+        
+        # Mappe valg
+        ttk.Label(input_frame, text="Billede mappe:").grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        self.analysis_dir_entry = ttk.Entry(input_frame, width=50)
+        self.analysis_dir_entry.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        ttk.Button(input_frame, text="Vælg Mappe", 
+                  command=self.select_analysis_directory).grid(row=0, column=2, padx=5, pady=5)
+        
+        # ASTAP sti
+        ttk.Label(input_frame, text="ASTAP sti:").grid(row=1, column=0, sticky='w', padx=5, pady=5)
+        self.astap_path_entry = ttk.Entry(input_frame, width=50)
+        self.astap_path_entry.grid(row=1, column=1, padx=5, pady=5, sticky='ew')
+        self.astap_path_entry.insert(0, r"C:\Program Files\astap\astap.exe")
+        ttk.Button(input_frame, text="Vælg Fil", 
+                  command=self.select_astap_path).grid(row=1, column=2, padx=5, pady=5)
+        
+        # Pixelscale indstilling
+        ttk.Label(input_frame, text="Pixelscale (grader/pixel, 1x1 binning):").grid(row=2, column=0, sticky='w', padx=5, pady=5)
+        self.pixelscale_entry = ttk.Entry(input_frame, width=20)
+        self.pixelscale_entry.grid(row=2, column=1, padx=5, pady=5, sticky='w')
+        self.pixelscale_entry.insert(0, "6.2399e-05")  # 0.22463761903207005/3600
+        
+        # Radius af Pixelsum (Tracking)
+        ttk.Label(input_frame, text="Radius af Pixelsum (Tracking):").grid(row=3, column=0, sticky='w', padx=5, pady=5)
+        self.tracking_pixelsum_radius_entry = ttk.Spinbox(input_frame, from_=10, to=200, increment=5,
+                                                         textvariable=self.tracking_pixelsum_radius, width=10)
+        self.tracking_pixelsum_radius_entry.grid(row=3, column=1, padx=5, pady=5, sticky='w')
+        ttk.Label(input_frame, text="pixels").grid(row=3, column=2, sticky='w', padx=5, pady=5)
+        
+        # Output indstillinger
+        output_frame = ttk.LabelFrame(input_frame, text="Output Indstillinger")
+        output_frame.grid(row=4, column=0, columnspan=3, sticky='ew', padx=5, pady=5)
+        
+        self.save_plots_var = tk.BooleanVar(value=True)  # Standard til True da vi altid vil vise plots i GUI
+        ttk.Checkbutton(output_frame, text="Gem plots som billeder og vis i GUI", 
+                       variable=self.save_plots_var).grid(row=0, column=0, sticky='w', padx=5, pady=2)
+        
+        # Gør kolonne 1 stretchable
+        input_frame.grid_columnconfigure(1, weight=1)
+        
+        # Kontrol knapper (venstre side)
+        control_frame = ttk.LabelFrame(left_frame, text="Analyse Kontrol")
+        control_frame.pack(fill='x', pady=(0, 10))
+        
+        # Status display
+        if SKIMAGE_AVAILABLE:
+            status_text = "Billede analyse biblioteker tilgængelige"
+            status_color = 'black'
+        else:
+            status_text = "FEJL: Manglende biblioteker (skimage, cv2, scipy)"
+            status_color = 'red'
+        
+        status_label = ttk.Label(control_frame, text=f"Status: {status_text}")
+        status_label.pack(pady=2)
+        if not SKIMAGE_AVAILABLE:
+            status_label.config(foreground='red')
+        
+        # Kontrol knapper
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(pady=5)
+        
+        self.start_analysis_btn = ttk.Button(button_frame, text="Start Billede Analyse", 
+                                           command=self.start_image_analysis)
+        self.start_analysis_btn.pack(side='left', padx=5)
+        
+        self.stop_analysis_btn = ttk.Button(button_frame, text="Stop Analyse", 
+                                          command=self.stop_image_analysis, state='disabled')
+        self.stop_analysis_btn.pack(side='left', padx=5)
+        
+        self.show_plots_btn = ttk.Button(button_frame, text="Vis Plots", 
+                                       command=self.show_plots_manual)
+        self.show_plots_btn.pack(side='left', padx=5)
+        
+        # Progress bar
+        self.analysis_progress_var = tk.DoubleVar()
+        self.analysis_progress_bar = ttk.Progressbar(control_frame, variable=self.analysis_progress_var, maximum=100)
+        self.analysis_progress_bar.pack(fill='x', padx=5, pady=5)
+        
+        # Plot område (venstre side)
+        plot_frame = ttk.LabelFrame(left_frame, text="Plot Visning")
+        plot_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        # Plot canvas med scrollbar
+        self.setup_plot_display(plot_frame)
+        
+        # Log sektion (højre side)
+        log_frame = ttk.LabelFrame(right_frame, text="Analyse Log")
+        log_frame.pack(fill='both', expand=True)
+        
+        # Sæt en passende bredde på log området
+        right_frame.configure(width=420)
+        right_frame.pack_propagate(False)
+        
+        # Log text widget med scrollbar
+        log_container = ttk.Frame(log_frame)
+        log_container.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.analysis_log_text = tk.Text(log_container, width=52, wrap='word')
+        analysis_log_scrollbar = ttk.Scrollbar(log_container, orient='vertical', command=self.analysis_log_text.yview)
+        self.analysis_log_text.configure(yscrollcommand=analysis_log_scrollbar.set)
+        
+        analysis_log_scrollbar.pack(side='right', fill='y')
+        self.analysis_log_text.pack(side='left', fill='both', expand=True)
+        
+        # Clear log button
+        ttk.Button(log_frame, text="Ryd Log", 
+                  command=lambda: self.analysis_log_text.delete(1.0, tk.END)).pack(pady=2)
+    
+    def create_calculate_tle_tab(self, notebook):
+        """Tab til at beregne TLE fra observationer"""
+        tle_frame = ttk.Frame(notebook)
+        notebook.add(tle_frame, text="Beregn TLE")
+        
+        # Opret en canvas og scrollbar for at gøre indholdet scrollbart
+        canvas = tk.Canvas(tle_frame)
+        v_scrollbar = ttk.Scrollbar(tle_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=v_scrollbar.set)
+        
+        # Tilføj mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        
+        # Pack canvas og scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        v_scrollbar.pack(side="right", fill="y")
+        
+        # Hovedcontainer (nu inde i scrollable_frame)
+        main_container = ttk.Frame(scrollable_frame)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Opret to kolonner: venstre for kontrol, højre for log
+        left_frame = ttk.Frame(main_container)
+        left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+        
+        right_frame = ttk.Frame(main_container)
+        right_frame.pack(side='right', fill='y', expand=False, padx=(5, 0))
+        
+        # Sæt en passende bredde på log området
+        right_frame.configure(width=420)
+        right_frame.pack_propagate(False)
+        
+        # ===== PLOT SEKTION (øverst i venstre side) =====
+        
+        # Plot frame for TLE afvigelser
+        plot_frame = ttk.LabelFrame(left_frame, text="TLE Afvigelsesplot")
+        plot_frame.pack(fill='both', expand=False, pady=(0, 10))
+        
+        # Opret matplotlib figure med 2 subplots (bredde reduceret med 1/4)
+        self.tle_plot_figure, self.tle_plot_axes = plt.subplots(2, 1, figsize=(7, 6))
+        self.tle_plot_figure.suptitle('TLE Afvigelser: Observeret vs. TLE Forudsigelse', 
+                                       fontsize=12, fontweight='bold')
+        
+        # Tilføj grid og legend til begge subplots
+        for ax in self.tle_plot_axes:
+            ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
+            ax.legend(loc='best', framealpha=0.9)
+        
+        # Sæt labels for akserne
+        self.tle_plot_axes[0].set_ylabel('Afvigelse (grader)', fontsize=10)
+        self.tle_plot_axes[0].set_title('ΔRA: Observeret - TLE', fontsize=10, fontweight='bold')
+        
+        self.tle_plot_axes[1].set_xlabel('Sekunder efter første observation', fontsize=10)
+        self.tle_plot_axes[1].set_ylabel('Afvigelse (grader)', fontsize=10)
+        self.tle_plot_axes[1].set_title('ΔDEC: Observeret - TLE', fontsize=10, fontweight='bold')
+        
+        # Juster layout
+        self.tle_plot_figure.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        # Embed matplotlib figure i tkinter
+        self.tle_canvas = FigureCanvasTkAgg(self.tle_plot_figure, master=plot_frame)
+        self.tle_canvas.draw()
+        self.tle_canvas.get_tk_widget().pack(fill='both', expand=True)
+        
+        # ===== KONTROL SEKTION (under plot) =====
+        
+        # Data indlæsning sektion
+        load_frame = ttk.LabelFrame(left_frame, text="Data Indlæsning")
+        load_frame.pack(fill='x', pady=(0, 10))
+        
+        # Mappe valg
+        ttk.Label(load_frame, text="CSV fil (data*.csv):").grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        self.tle_dir_entry = ttk.Entry(load_frame, width=50)
+        self.tle_dir_entry.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        ttk.Button(load_frame, text="Vælg Mappe", 
+                  command=self.select_tle_directory).grid(row=0, column=2, padx=5, pady=5)
+        
+        # Status label
+        self.tle_status_label = ttk.Label(load_frame, text="Ingen data indlæst", foreground='gray')
+        self.tle_status_label.grid(row=1, column=0, columnspan=3, sticky='w', padx=5, pady=5)
+        
+        load_frame.grid_columnconfigure(1, weight=1)
+        
+        # TLE beregnings parametre sektion
+        params_frame = ttk.LabelFrame(left_frame, text="TLE Beregnings Parametre")
+        params_frame.pack(fill='x', pady=(0, 10))
+        
+        # Metode valg
+        ttk.Label(params_frame, text="IOD Metode:").grid(row=0, column=0, sticky='w', padx=5, pady=5)
+        self.tle_method_combo = ttk.Combobox(params_frame, 
+                                            values=['gauss', 'laplace', 'gooding', 'double_R', 'multilaplace', 'circular'],
+                                            state='readonly', width=20)
+        self.tle_method_combo.grid(row=0, column=1, padx=5, pady=5, sticky='w')
+        self.tle_method_combo.set('gauss')  # Default metode
+        
+        # Index valg
+        ttk.Label(params_frame, text="Index 1:").grid(row=1, column=0, sticky='w', padx=5, pady=5)
+        self.index1_combo = ttk.Combobox(params_frame, state='readonly', width=15)
+        self.index1_combo.grid(row=1, column=1, padx=5, pady=5, sticky='w')
+        
+        ttk.Label(params_frame, text="Index 2:").grid(row=2, column=0, sticky='w', padx=5, pady=5)
+        self.index2_combo = ttk.Combobox(params_frame, state='readonly', width=15)
+        self.index2_combo.grid(row=2, column=1, padx=5, pady=5, sticky='w')
+        
+        ttk.Label(params_frame, text="Index 3:").grid(row=3, column=0, sticky='w', padx=5, pady=5)
+        self.index3_combo = ttk.Combobox(params_frame, state='readonly', width=15)
+        self.index3_combo.grid(row=3, column=1, padx=5, pady=5, sticky='w')
+        
+        # Info tekst om index valg
+        info_label = ttk.Label(params_frame, 
+                              text="Vælg 3 observationspunkter til TLE beregning",
+                              foreground='blue', font=('Arial', 9, 'italic'))
+        info_label.grid(row=4, column=0, columnspan=2, sticky='w', padx=5, pady=2)
+        
+        # Beregn knap
+        ttk.Button(params_frame, text="🚀 Beregn TLE", 
+                  command=self.calculate_tle_from_observations,
+                  style='Accent.TButton').grid(row=5, column=0, columnspan=2, pady=10, padx=5)
+        
+        # Resultat visning sektion
+        result_frame = ttk.LabelFrame(left_frame, text="Beregnede Resultater")
+        result_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        # TLE linjer display
+        tle_display_frame = ttk.Frame(result_frame)
+        tle_display_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(tle_display_frame, text="Genereret TLE:", font=('Arial', 10, 'bold')).pack(anchor='w')
+        
+        self.tle_line1_text = tk.Text(tle_display_frame, height=1, wrap='none', font=('Courier', 9))
+        self.tle_line1_text.pack(fill='x', pady=2)
+        
+        self.tle_line2_text = tk.Text(tle_display_frame, height=1, wrap='none', font=('Courier', 9))
+        self.tle_line2_text.pack(fill='x', pady=2)
+        
+        # Orbital elements display
+        orbital_display_frame = ttk.Frame(result_frame)
+        orbital_display_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Label(orbital_display_frame, text="Orbital Elementer:", font=('Arial', 10, 'bold')).pack(anchor='w')
+        
+        self.orbital_elements_text = tk.Text(orbital_display_frame, height=8, wrap='word', font=('Courier', 9))
+        self.orbital_elements_text.pack(fill='both', expand=True, pady=2)
+        
+        # Knapper for plot og gem
+        button_frame = ttk.Frame(result_frame)
+        button_frame.pack(fill='x', padx=5, pady=5)
+        
+        ttk.Button(button_frame, text="Vis 3D Plot", 
+                  command=self.show_tle_3d_plot).pack(side='left', padx=5)
+        
+        ttk.Button(button_frame, text="Gem Resultater til CSV", 
+                  command=self.save_tle_results).pack(side='left', padx=5)
+        
+        # ===== LOG SEKTION (højre side) =====
+        log_frame = ttk.LabelFrame(right_frame, text="TLE Beregnings Log")
+        log_frame.pack(fill='both', expand=True)
+        
+        # Log text widget med scrollbar
+        log_container = ttk.Frame(log_frame)
+        log_container.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.tle_log_text = tk.Text(log_container, width=52, wrap='word')
+        tle_log_scrollbar = ttk.Scrollbar(log_container, orient='vertical', command=self.tle_log_text.yview)
+        self.tle_log_text.configure(yscrollcommand=tle_log_scrollbar.set)
+        
+        tle_log_scrollbar.pack(side='right', fill='y')
+        self.tle_log_text.pack(side='left', fill='both', expand=True)
+        
+        # Clear log button
+        ttk.Button(log_frame, text="Ryd Log", 
+                  command=lambda: self.tle_log_text.delete(1.0, tk.END)).pack(pady=2)
+        
+        # Tilføj velkomst besked til log
+        self.log_tle_message("TLE Beregnings Log startet...")
+        if ORBDTOOLS_AVAILABLE:
+            self.log_tle_message("✅ orbdtools tilgængelig - klar til beregninger")
+        else:
+            self.log_tle_message("❌ ADVARSEL: orbdtools ikke tilgængelig!")
+            self.log_tle_message("    Installer med: pip install orbdtools")
+        self.log_tle_message("\nVælg en mappe med CSV-fil der starter med 'data'.\n")
+    
+    # ================
+    # Satelit Hentning Funktioner
+    # ================
+    def get_satellite_status(self, start_time_str, end_time_str, selected_date):
+        """
+        Bestemmer status for en satelit baseret på nuværende tid
+        
+        Args:
+            start_time_str (str): StartTime i format 'HH:MM'
+            end_time_str (str): EndTime i format 'HH:MM'
+            selected_date (str): Datoen for satelitpassagen i format 'YYYY-MM-DD'
+            
+        Returns:
+            str: 'passed', 'starting_soon', 'active', eller 'normal'
+        """
+        try:
+            # Konverter strenge til datetime objekter
+            current_datetime = datetime.now()
+            
+            # Parse den valgte dato
+            selected_datetime = datetime.strptime(selected_date, '%Y-%m-%d')
+            
+            # Tjek om vi kigger på i dag
+            if selected_datetime.date() != current_datetime.date():
+                return 'normal'  # Hvis det ikke er i dag, vis normal farve
+            
+            # Parse tiderne - prøv først med sekunder, derefter uden
+            try:
+                start_time = datetime.strptime(start_time_str, '%H:%M:%S').time()
+            except ValueError:
+                start_time = datetime.strptime(start_time_str, '%H:%M').time()
+            
+            try:
+                end_time = datetime.strptime(end_time_str, '%H:%M:%S').time()
+            except ValueError:
+                end_time = datetime.strptime(end_time_str, '%H:%M').time()
+            
+            # Kombiner dato og tid
+            start_datetime = datetime.combine(selected_datetime.date(), start_time)
+            end_datetime = datetime.combine(selected_datetime.date(), end_time)
+            
+            # Håndter tilfælde hvor end_time er efter midnat (næste dag)
+            if end_time < start_time:
+                end_datetime = end_datetime + timedelta(days=1)
+            
+            # Sammenlign med nuværende tid
+            current_time = current_datetime
+            
+            # Tjek status
+            if current_time > end_datetime:
+                return 'passed'  # Passeret
+            elif current_time >= start_datetime:
+                return 'active'  # Aktiv nu
+            elif (start_datetime - current_time).total_seconds() <= 300:  # 5 minutter = 300 sekunder
+                return 'starting_soon'  # Starter snart
+            else:
+                return 'normal'  # Normal
+                
+        except (ValueError, TypeError):
+            return 'normal'  # Hvis parsing fejler, returner normal
+            
+    def fetch_satellites_threaded(self):
+        """Starter satelit-hentning i separat tråd"""
+        self.log_satellite_message("Starter satelit hentning...")
+        threading.Thread(target=self.fetch_satellites, daemon=True).start()
+    
+    def fetch_satellites(self):
+        """Hent satelitlister fra Heavens Above og Space-Track"""
+        try:
+            # Tjek at Selenium er tilgængeligt
+            if not SELENIUM_AVAILABLE:
+                self.log_satellite_message("❌ Selenium ikke tilgængelig")
+                messagebox.showerror("Fejl", "Selenium er ikke installeret. Installer med: pip install selenium beautifulsoup4")
+                return
+                
+            # Hent input værdier
+            date_str = self.date_entry.get()
+            lat = float(self.lat_entry.get())
+            lng = float(self.lng_entry.get())
+            period = self.period_combo.get()
+            username = self.username_entry.get()
+            password = self.password_entry.get()
+            utc_offset = float(self.utc_offset_entry.get())
+            
+            if not username or not password:
+                self.log_satellite_message("❌ Manglende Space-Track login oplysninger")
+                messagebox.showerror("Fejl", "Indtast Space-Track login oplysninger")
+                return
+            
+            self.log_satellite_message(f"Henter data for {date_str}, {period}")
+            self.log_satellite_message(f"Lokation: {lat:.4f}, {lng:.4f}")
+            self.status_label.config(text="Henter satelitdata...")
+            self.progress_var.set(20)
+            
+            # Kald dine funktioner
+            self.df_merged, self.df_heavens = self.fetch_satellite_data_with_tle(
+                date_str, username, password, lat, lng, period, utc_offset
+            )
+
+            self.log_satellite_message("Sorterer data efter starttid...")
+            # Sorter data efter StartTime
+            self.df_merged = self.sort_dataframe_by_starttime(self.df_merged)
+            
+            self.progress_var.set(90)
+            
+            # Opdater treeview
+            self.log_satellite_message("Opdaterer satelitliste...")
+            self.update_satellite_tree()
+            
+            self.progress_var.set(100)
+            success_msg = f"Hentet {len(self.df_merged)} satellitter med TLE data (sorteret efter starttid)"
+            self.status_label.config(text=success_msg)
+            
+        except Exception as e:
+            error_msg = f"Fejl ved hentning: {str(e)}"
+            self.log_satellite_message(f"❌ {error_msg}")
+            messagebox.showerror("Fejl", error_msg)
+            self.status_label.config(text="Fejl ved hentning af data")
+        finally:
+            self.progress_var.set(0)
+    
+    def update_satellite_tree(self):
+        """Opdater treeview med satelitdata og farvekodning"""
+        # Ryd tidligere data
+        for item in self.satellite_tree.get_children():
+            self.satellite_tree.delete(item)
+        
+        if self.df_merged is not None:
+            selected_date = self.date_entry.get()
+            
+            for _, row in self.df_merged.iterrows():
+                values = (
+                    row.get('SatName', ''),
+                    row.get('NORAD', ''),
+                    row.get('StartTime', ''),
+                    row.get('HiTime', ''),
+                    row.get('EndTime', ''),
+                    row.get('HiAlt', ''),
+                    row.get('Magnitude', ''),
+                    row.get('TLE1', '')[:50] + '...' if len(str(row.get('TLE1', ''))) > 50 else row.get('TLE1', ''),
+                    row.get('TLE2', '')[:50] + '...' if len(str(row.get('TLE2', ''))) > 50 else row.get('TLE2', '')
+                )
+                
+                # Bestem farvekategori
+                start_time = str(row.get('StartTime', ''))
+                end_time = str(row.get('EndTime', ''))
+                status = self.get_satellite_status(start_time, end_time, selected_date)
+                
+                # Indsæt række med korrekt farvetag
+                self.satellite_tree.insert('', 'end', values=values, tags=(status,))
+    
+    def save_satellite_list(self):
+        """Gem satelitlisten til fil"""
+        if self.df_merged is None:
+            self.log_satellite_message("❌ Ingen data at gemme")
+            messagebox.showwarning("Advarsel", "Ingen data at gemme!")
+            return
+        
+        self.log_satellite_message("Åbner gem dialog...")
+        filename = filedialog.asksaveasfilename(
+            title="Gem satelitliste",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if filename:
+            self.log_satellite_message(f"Gemmer liste til: {filename}")
+            self.df_merged.to_csv(filename, index=False, sep=';')
+            self.log_satellite_message("✅ Satelitliste gemt succesfuldt")
+            messagebox.showinfo("Gemt", f"Satelitliste gemt som: {filename}")
+        else:
+            self.log_satellite_message("❌ Gem operation afbrudt")
+    
+    def clear_satellite_list(self):
+        """Ryd satelitlisten"""
+        self.log_satellite_message("Rydder satelitliste...")
+        for item in self.satellite_tree.get_children():
+            self.satellite_tree.delete(item)
+        self.df_merged = None
+        self.df_heavens = None
+        self.log_satellite_message("✅ Satelitliste ryddet")
+        self.status_label.config(text="Liste ryddet")
+    
+    def load_csv_file(self):
+        """Åbner og indlæser en CSV-fil med satelitdata"""
+        self.log_satellite_message("Åbner fil dialog for CSV...")
+        try:
+            filename = filedialog.askopenfilename(
+                title="Åbn satelitdata CSV-fil",
+                filetypes=[
+                    ("CSV files", "*.csv"),
+                    ("Semicolon separated", "*.csv"),
+                    ("All files", "*.*")
+                ]
+            )
+            
+            if not filename:
+                self.log_satellite_message("❌ Ingen fil valgt")
+                return
+            
+            self.log_satellite_message(f"Indlæser CSV-fil: {filename}")
+            self.status_label.config(text="Indlæser CSV-fil...")
+            self.progress_var.set(20)
+            
+            # Prøv forskellige separatorer
+            separators = [';', ',', '\t']
+            df_loaded = None
+            
+            for sep in separators:
+                try:
+                    df_test = pd.read_csv(filename, sep=sep, nrows=5)
+                    # Tjek om vi har de forventede kolonner
+                    expected_cols = ['SatName', 'NORAD', 'StartTime', 'HiTime', 'EndTime']
+                    if any(col in df_test.columns for col in expected_cols):
+                        df_loaded = pd.read_csv(filename, sep=sep)
+                        self.status_label.config(text=f"CSV indlæst med separator '{sep}'")
+                        break
+                except:
+                    continue
+            
+            if df_loaded is None:
+                # Hvis automatisk detektion fejler, prøv standard CSV
+                df_loaded = pd.read_csv(filename)
+            
+            self.progress_var.set(60)
+            
+            # Valider og rens data
+            df_loaded = self.validate_csv_data(df_loaded)
+            
+            # Sorter data efter StartTime
+            df_loaded = self.sort_dataframe_by_starttime(df_loaded)
+            
+            self.progress_var.set(80)
+            
+            # Opdater variabler
+            self.df_merged = df_loaded
+            
+            # Opdater display
+            self.log_satellite_message("Opdaterer satelitliste fra CSV...")
+            self.update_satellite_tree()
+            
+            self.progress_var.set(100)
+            success_msg = f"CSV-fil indlæst: {len(df_loaded)} satellitter (sorteret efter starttid)"
+            self.log_satellite_message(f"✅ {success_msg}")
+            self.status_label.config(text=success_msg)
+            
+            messagebox.showinfo("Succes", f"CSV-fil indlæst med {len(df_loaded)} satellitter")
+            
+        except Exception as e:
+            error_msg = f"Kunne ikke indlæse CSV-fil: {str(e)}"
+            self.log_satellite_message(f"❌ {error_msg}")
+            messagebox.showerror("Fejl", error_msg)
+            self.status_label.config(text="Fejl ved indlæsning af CSV-fil")
+        finally:
+            self.progress_var.set(0)
+
+    def validate_csv_data(self, df):
+        """Validerer og renser CSV-data for at sikre kompatibilitet"""
+        try:
+            # Standardiser kolonnenavne (case-insensitive mapping)
+            column_mapping = {
+                'satname': 'SatName',
+                'satellite': 'SatName',
+                'name': 'SatName',
+                'norad': 'NORAD',
+                'norad_id': 'NORAD',
+                'starttime': 'StartTime',
+                'start_time': 'StartTime',
+                'hitime': 'HiTime',
+                'hi_time': 'HiTime',
+                'endtime': 'EndTime',
+                'end_time': 'EndTime',
+                'hialt': 'HiAlt',
+                'hi_alt': 'HiAlt',
+                'altitude': 'HiAlt',
+                'magnitude': 'Magnitude',
+                'mag': 'Magnitude',
+                'tle1': 'TLE1',
+                'tle_1': 'TLE1',
+                'tle2': 'TLE2',
+                'tle_2': 'TLE2'
+            }
+            
+            # Omdøb kolonner
+            df_renamed = df.copy()
+            for old_col in df.columns:
+                standard_name = column_mapping.get(old_col.lower())
+                if standard_name:
+                    df_renamed = df_renamed.rename(columns={old_col: standard_name})
+            
+            # Sikr at vi har minimumskolonner
+            required_cols = ['SatName', 'NORAD']
+            missing_cols = [col for col in required_cols if col not in df_renamed.columns]
+            
+            if missing_cols:
+                # Prøv at oprette manglende kolonner med standardværdier
+                for col in missing_cols:
+                    if col == 'SatName':
+                        df_renamed['SatName'] = f"Satellite_{df_renamed.index}"
+                    elif col == 'NORAD':
+                        df_renamed['NORAD'] = range(1, len(df_renamed) + 1)
+            
+            # Sikr at NORAD er numerisk
+            if 'NORAD' in df_renamed.columns:
+                df_renamed['NORAD'] = pd.to_numeric(df_renamed['NORAD'], errors='coerce')
+            
+            # Fjern rækker med tomme satelitnavne
+            df_renamed = df_renamed.dropna(subset=['SatName'])
+            
+            return df_renamed
+            
+        except Exception as e:
+            # Hvis validering fejler, returner original DataFrame
+            print(f"Validering fejlede: {e}")
+            return df
+    
+    def fetch_active_tles(self, username, password):
+        """Henter alle aktive TLE'er fra Space-Track"""
+        LOGIN_URL = "https://www.space-track.org/ajaxauth/login"
+        TLE_URL = (
+            "https://www.space-track.org/basicspacedata/query/"
+            "class/tle_latest/ORDINAL/1/orderby/NORAD_CAT_ID ASC/format/tle"
+        )
+        
+        with requests.Session() as session:
+            login_data = {"identity": username, "password": password}
+            resp = session.post(LOGIN_URL, data=login_data)
+            if resp.status_code != 200:
+                raise Exception(f"Login fejlede ({resp.status_code})")
+
+            tle_resp = session.get(TLE_URL)
+            if tle_resp.status_code != 200:
+                raise Exception(f"Kunne ikke hente TLE'er ({tle_resp.status_code})")
+
+            lines = [line.strip() for line in tle_resp.text.splitlines() if line.strip()]
+            
+            tle_data = []
+            for i in range(0, len(lines), 2):
+                if i + 1 < len(lines):
+                    line1 = lines[i].strip()
+                    line2 = lines[i + 1].strip()
+                    
+                    if line1.startswith('1 ') and line2.startswith('2 '):
+                        norad_id = line1[2:7].strip()
+                        name = f"NORAD-{norad_id}"
+                        
+                        tle_data.append({
+                            'Name': name,
+                            'NORAD_ID': norad_id,
+                            'TLE1': line1, 
+                            'TLE2': line2
+                        })
+
+            return pd.DataFrame(tle_data)
+    
+    def fetch_satellite_data_selenium(self, date, lat=55.781553, lng=12.514595, period='morning'):
+        """Henter satellitdata fra Heavens-Above"""
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+
+        # Prøv at bruge WebDriverManager hvis tilgængelig
+        if WEBDRIVER_MANAGER_AVAILABLE:
+            try:
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=options)
+            except Exception as e:
+                # Hvis WebDriverManager fejler, prøv standard metode
+                print(f"WebDriverManager fejlede: {e}")
+                try:
+                    driver = webdriver.Chrome(options=options)
+                except Exception as chrome_error:
+                    raise Exception(f"Chrome WebDriver fejl. Installer chromedriver eller kør: pip install webdriver-manager. Fejl: {chrome_error}")
+        else:
+            # Fallback til standard Chrome driver
+            try:
+                driver = webdriver.Chrome(options=options)
+            except Exception as chrome_error:
+                raise Exception(f"Chrome WebDriver ikke fundet. Installer webdriver-manager med: pip install webdriver-manager. Fejl: {chrome_error}")
+        
+        try:
+            url = f"https://www.heavens-above.com/AllSats.aspx?lat={lat}&lng={lng}&date={date}"
+            driver.get(url)
+            wait = WebDriverWait(driver, 10)
+
+            try:
+                exclude_box = wait.until(EC.presence_of_element_located((By.ID, "ctl00_cph1_chkExcludeStarlink")))
+                if exclude_box.is_selected():
+                    driver.execute_script("arguments[0].click();", exclude_box)
+                    time.sleep(0.5)
+            except Exception:
+                pass
+
+            radio_id = {
+                'morning': "ctl00_cph1_TimeSelectionControl1_radioAMPM_0",
+                'evening': "ctl00_cph1_TimeSelectionControl1_radioAMPM_1"
+            }[period.lower()]
+
+            radio = wait.until(EC.presence_of_element_located((By.ID, radio_id)))
+            driver.execute_script("arguments[0].scrollIntoView(true);", radio)
+            driver.execute_script("arguments[0].click();", radio)
+
+            update_button = driver.find_element(By.ID, "ctl00_cph1_TimeSelectionControl1_btnSubmit")
+            driver.execute_script("arguments[0].scrollIntoView(true);", update_button)
+            driver.execute_script("arguments[0].click();", update_button)
+
+            time.sleep(1) # Vent for opdatering
+
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            table = soup.find('table', {'class': 'standardTable'})
+            rows = table.find_all('tr')[1:]
+
+            data = []
+            for row in rows:
+                cols = row.find_all('td')
+                if len(cols) >= 10:
+                    onclick_attr = row.get('onclick', '')
+                    norad_id = None
+                    if onclick_attr:
+                        match = re.search(r"satid=(\d+)", onclick_attr)
+                        if match:
+                            norad_id = int(match.group(1))
+
+                    data.append({
+                        'SatName': cols[0].text.strip(),
+                        'Magnitude': cols[1].text.strip(),
+                        'StartTime': cols[2].text.strip(),
+                        'StartAlt': cols[3].text.strip(),
+                        'StartAz': cols[4].text.strip(),
+                        'HiTime': cols[5].text.strip(),
+                        'HiAlt': cols[6].text.strip(),
+                        'HiAz': cols[7].text.strip(),
+                        'EndTime': cols[8].text.strip(),
+                        'EndAlt': cols[9].text.strip(),
+                        'EndAz': cols[10].text.strip() if len(cols) > 10 else None,
+                        'NORAD': norad_id,
+                        'Period': period.capitalize()
+                    })
+
+            df = pd.DataFrame(data)
+            df['NORAD'] = df['NORAD'].astype('Int64')
+
+            # Tidsformattering og oprydning som i din originale kode
+            time_cols = ['StartTime', 'HiTime', 'EndTime']
+            for col in time_cols:
+                # Gem original string data for fallback
+                original_col = df[col].str.strip()
+                # Prøv først %H:%M:%S (standard Heavens-Above format), derefter %H:%M som fallback
+                df[col] = pd.to_datetime(original_col, format='%H:%M:%S', errors='coerce')
+                # Hvis nogle værdier er NaN, prøv at parse de originale strenge med %H:%M
+                mask = df[col].isna()
+                if mask.any():
+                    df.loc[mask, col] = pd.to_datetime(original_col[mask], format='%H:%M', errors='coerce')
+                # Ikke tilføj fast tidsforskydning her - det gøres i GUI baseret på brugerens valg
+                df[col] = df[col].dt.strftime('%H:%M:%S')
+
+            df = df.iloc[1:]
+
+            cols_to_clean = ['StartAlt', 'StartAz', 'HiAlt', 'HiAz', 'EndAlt', 'EndAz']
+            for col in cols_to_clean:
+                df[col] = df[col].str.replace('°', '', regex=False).str.strip()
+
+            df['StartAz'] = df['StartAz'].str.replace('Ø', 'E').str.replace('V', 'W')
+            df['HiAz'] = df['HiAz'].str.replace('Ø', 'E').str.replace('V', 'W')
+            df['EndAz'] = df['EndAz'].str.replace('Ø', 'E').str.replace('V', 'W')
+
+            df = df.drop(columns=['Period'])
+            df = df.reset_index(drop=True)
+            return df
+
+        finally:
+            driver.quit()
+    
+    def fetch_satellite_data_with_tle(self, date, username, password, lat=55.781553, lng=12.514595, period='morning', utc_offset=2):
+        """Hovedfunktion der kombinerer Heavens-Above og Space-Track data"""
+        self.progress_var.set(30)
+        self.log_satellite_message("Henter aktive TLE'er fra Space-Track...")
+        df_TLE = self.fetch_active_tles(username, password)
+        self.log_satellite_message(f"Hentede {len(df_TLE)} aktive TLE'er fra Space-Track")
+
+        df_TLE['NORAD_ID'] = pd.to_numeric(df_TLE['NORAD_ID'], errors='coerce')
+        
+        self.progress_var.set(60)
+
+        self.log_satellite_message("Henter satellitdata fra Heavens-Above...")
+        df_heavens = self.fetch_satellite_data_selenium(date, lat, lng, period)
+        self.log_satellite_message(f"Hentede {len(df_heavens)} satellitter fra Heavens-Above")
+
+        # Tilføj UTC offset til tiderne efter hentning
+        time_cols = ['StartTime', 'HiTime', 'EndTime']
+        self.log_satellite_message(f"Anvender UTC offset på {utc_offset} timer til tiderne")
+
+        for col in time_cols:
+            if col in df_heavens.columns:
+                # Data kommer allerede formateret som %H:%M:%S fra selenium funktionen
+                # så vi parser direkte med det format
+                df_heavens[col] = pd.to_datetime(df_heavens[col], format='%H:%M:%S', errors='coerce')
+                df_heavens[col] = df_heavens[col] + pd.Timedelta(hours=utc_offset)
+                df_heavens[col] = df_heavens[col].dt.strftime('%H:%M:%S')
+        
+        self.progress_var.set(80)
+        self.log_satellite_message("Sammenfletter Heavens-Above data med TLE'er...")
+        df_merged = df_heavens.merge(df_TLE, left_on='NORAD', right_on='NORAD_ID', how='left')
+        df_merged = df_merged.drop(columns=['NORAD_ID', 'Name'])
+        df_merged = df_merged.reset_index(drop=True)
+        df_merged = df_merged.dropna(subset=['TLE1'])
+        
+        return df_merged, df_heavens
+
+    def open_file(self):
+        """Opdateret open_file metode med CSV-support"""
+        file_types = [
+            ("CSV files", "*.csv"),
+            ("All files", "*.*")
+        ]
+        
+        filename = filedialog.askopenfilename(
+            title="Åbn fil",
+            filetypes=file_types
+        )
+        
+        if filename:
+            if filename.endswith('.csv'):
+                self.load_csv_file_direct(filename)
+            else:
+                messagebox.showinfo("Info", f"Åbnede fil: {filename}")
+
+    def load_csv_file_direct(self, filename):
+        """Hjælpemetode til at indlæse CSV direkte fra filnavn"""
+        try:
+            # Prøv forskellige separatorer
+            separators = [';', ',', '\t']
+            df_loaded = None
+            
+            for sep in separators:
+                try:
+                    df_test = pd.read_csv(filename, sep=sep, nrows=5)
+                    expected_cols = ['SatName', 'NORAD', 'StartTime', 'HiTime', 'EndTime']
+                    if any(col in df_test.columns for col in expected_cols):
+                        df_loaded = pd.read_csv(filename, sep=sep)
+                        break
+                except:
+                    continue
+            
+            if df_loaded is None:
+                df_loaded = pd.read_csv(filename)
+            
+            # Valider data
+            df_loaded = self.validate_csv_data(df_loaded)
+            
+            # Sorter data efter StartTime
+            df_loaded = self.sort_dataframe_by_starttime(df_loaded)
+            
+            # Opdater variabler
+            self.df_merged = df_loaded
+            
+            # Opdater display
+            self.update_satellite_tree()
+            
+            self.status_label.config(text=f"CSV-fil indlæst: {len(df_loaded)} satellitter (sorteret efter starttid)")
+            messagebox.showinfo("Succes", f"CSV-fil indlæst med {len(df_loaded)} satellitter")
+            
+        except Exception as e:
+            messagebox.showerror("Fejl", f"Kunne ikke indlæse CSV-fil:\n{str(e)}")
+
+    def save_file(self):
+        messagebox.showinfo("Gem", "Gem fil funktion")
+
+    def show_about(self):
+        messagebox.showinfo("Om", "Satellite Tracking GUI - Udviklet til specialkursus og fagprojekt \n af Victor Rama Vestergaard og Viggo Fischer")
+    
+    # =================
+    # MORAVIAN KAMERA KONTROL METODER
+    # =================
+    
+    def log_camera_message(self, message):
+        """Tilføj besked til kamera loggen med tidsstempel"""
+        try:
+            if hasattr(self, 'camera_log_text'):
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                log_entry = f"[{timestamp}] {message}\n"
+                self.camera_log_text.insert(tk.END, log_entry)
+                self.camera_log_text.see(tk.END)  # Scroll til bunden
+        except:
+            pass  # Ignorer fejl hvis log ikke er tilgængelig
+    
+    def log_satellite_message(self, message):
+        """Tilføj besked til satelit loggen med tidsstempel"""
+        try:
+            if hasattr(self, 'satellite_log_text'):
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                log_entry = f"[{timestamp}] {message}\n"
+                self.satellite_log_text.insert(tk.END, log_entry)
+                self.satellite_log_text.see(tk.END)  # Scroll til bunden
+        except:
+            pass  # Ignorer fejl hvis log ikke er tilgængelig
+    
+    def connect_camera(self):
+        """Tilslut til Moravian kamera"""
+        self.log_camera_message("Forsøger at tilslutte Moravian kamera...")
+        try:
+            if not MORAVIAN_AVAILABLE:
+                self.log_camera_message("FEJL: Moravian kamera support ikke tilgængelig")
+                messagebox.showerror("Fejl", "Moravian kamera support ikke tilgængelig.\n\nSørg for at moravian_camera_official.py er tilgængelig og cXusb.dll er installeret.")
+                return
+            
+            if self.moravian_camera is not None:
+                self.log_camera_message("Kamera er allerede tilsluttet")
+                messagebox.showwarning("Allerede tilsluttet", "Kamera er allerede tilsluttet")
+                return
+            
+            # Opret og tilslut kamera
+            self.moravian_camera = MoravianCameraOfficial()
+            
+            if self.moravian_camera.connect():
+                self.camera_connected = True
+                self.camera_status_label.config(text="Tilsluttet", foreground='green')
+                
+                # Hent kamera info og opdater GUI
+                self.update_camera_info()
+                
+                self.log_camera_message("✅ Moravian kamera tilsluttet succesfuldt!")
+
+            else:
+                self.moravian_camera = None
+                self.log_camera_message("❌ Kunne ikke tilslutte til Moravian kamera")
+                messagebox.showerror("Fejl", "Kunne ikke tilslutte til Moravian kamera")
+                
+        except Exception as e:
+            self.moravian_camera = None
+            self.camera_connected = False
+            self.log_camera_message(f"❌ Fejl ved tilslutning: {str(e)}")
+            messagebox.showerror("Fejl", f"Fejl ved tilslutning til kamera: {str(e)}")
+    
+    def disconnect_camera(self):
+        """Afbryd forbindelse til Moravian kamera"""
+        self.log_camera_message("Afbryder kamera forbindelse...")
+        try:
+            if self.moravian_camera is not None:
+                self.moravian_camera.disconnect()
+                self.moravian_camera = None
+            
+            self.camera_connected = False
+            self.camera_status_label.config(text="Ikke tilsluttet", foreground='red')
+            self.current_temp_label.config(text="N/A")
+            self.filter_combo['values'] = []
+            self.gain_scale.configure(to=100)
+            
+            self.log_camera_message("✅ Kamera forbindelse afbrudt")
+
+            
+        except Exception as e:
+            self.log_camera_message(f"❌ Fejl ved afbrydelse: {str(e)}")
+            messagebox.showerror("Fejl", f"Fejl ved afbrydelse af kamera: {str(e)}")
+    
+    def update_camera_info(self):
+        """Opdater kamera information i GUI"""
+        try:
+            if not self.camera_connected or self.moravian_camera is None:
+                return
+            
+            # Hent kamera info
+            info = self.moravian_camera.get_camera_info()
+            
+            # Opdater status
+            camera_desc = info.get('description', 'Unknown Camera')
+            self.camera_status_label.config(text=f"Tilsluttet: {camera_desc}", foreground='green')
+            
+            # Opdater temperatur
+            current_temp = info.get('temperature', None)
+            if current_temp is not None:
+                self.current_temp_label.config(text=f"{current_temp:.1f}°C")
+            
+            # Opdater gain range
+            max_gain = info.get('max_gain', 100)
+            if max_gain > 0:
+                self.gain_scale.configure(to=max_gain)
+            
+            # Opdater filter liste
+            filters = info.get('filters', [])
+            if filters:
+                filter_names = []
+                for filter_info in filters:
+                    name = filter_info.get('name', f"Filter {filter_info.get('index', '?')}")
+                    filter_names.append(f"[{filter_info.get('index', '?')}] {name}")
+                
+                self.filter_combo['values'] = filter_names
+                if filter_names and not self.selected_filter.get():
+                    self.filter_combo.current(0)
+            
+        except Exception as e:
+            print(f"Fejl ved opdatering af kamera info: {str(e)}")
+    
+    def update_temperature_display(self):
+        """Opdater temperatur display"""
+        try:
+            if self.camera_connected and self.moravian_camera is not None:
+                temp = self.moravian_camera.get_temperature()
+                if temp is not None:
+                    self.current_temp_label.config(text=f"{temp:.1f}°C")
+        except:
+            pass
+    
+    def update_gain_label(self, value):
+        """Opdater gain værdi label når slider bevæges"""
+        try:
+            gain_value = int(float(value))
+            self.gain_value_label.config(text=str(gain_value))
+            
+            # Opdater manual entry felt
+            self.manual_gain_entry.delete(0, tk.END)
+            self.manual_gain_entry.insert(0, str(gain_value))
+        except:
+            pass
+    
+    def set_camera_gain(self):
+        """Sæt kamera gain"""
+        try:
+            if not self.camera_connected or self.moravian_camera is None:
+                messagebox.showwarning("Ikke tilsluttet", "Tilslut kamera først")
+                return
+            
+            # Prøv at få gain fra manual entry først, ellers brug slider
+            manual_value = self.manual_gain_entry.get().strip()
+            if manual_value:
+                try:
+                    gain_value = int(manual_value)
+                    # Opdater slider til at matche manual input
+                    self.camera_gain.set(gain_value)
+                except ValueError:
+                    messagebox.showerror("Fejl", "Ugyldig gain værdi i manuelt felt")
+                    return
+            else:
+                gain_value = int(self.camera_gain.get())
+            
+            # Validér gain range
+            info = self.moravian_camera.get_camera_info()
+            max_gain = info.get('max_gain', 100)
+            
+            if gain_value < 0 or gain_value > max_gain:
+                messagebox.showerror("Fejl", f"Gain skal være mellem 0 og {max_gain}")
+                return
+            
+            if self.moravian_camera.set_gain(gain_value):
+                self.log_camera_message(f"✅ Gain sat til {gain_value}")
+            else:
+                messagebox.showerror("Fejl", f"Kunne ikke sætte gain til {gain_value}")
+                self.log_camera_message(f"❌ Kunne ikke sætte gain til {gain_value}")
+                
+        except Exception as e:
+            messagebox.showerror("Fejl", f"Fejl ved sætning af gain: {str(e)}")
+    
+    def set_camera_binning(self):
+        """Sæt kamera binning"""
+        try:
+            if not self.camera_connected or self.moravian_camera is None:
+                messagebox.showwarning("Ikke tilsluttet", "Tilslut kamera først")
+                return
+            
+            x_binning = int(self.camera_binning_x.get())
+            y_binning = int(self.camera_binning_y.get())
+            
+            # Validér binning værdier
+            if x_binning < 1 or x_binning > 8 or y_binning < 1 or y_binning > 8:
+                messagebox.showerror("Fejl", "Binning skal være mellem 1 og 8")
+                return
+            
+            self.moravian_camera.set_binning(x_binning, y_binning)
+            self.log_camera_message(f"✅ Binning sat til {x_binning}x{y_binning}")
+                
+        except Exception as e:
+            messagebox.showerror("Fejl", f"Fejl ved sætning af binning: {str(e)}")
+    
+    def set_camera_filter(self):
+        """Sæt kamera filter"""
+        try:
+            if not self.camera_connected or self.moravian_camera is None:
+                messagebox.showwarning("Ikke tilsluttet", "Tilslut kamera først")
+                return
+            
+            # Hent filter info
+            info = self.moravian_camera.get_camera_info()
+            filters = info.get('filters', [])
+            
+            if not filters:
+                messagebox.showwarning("Ingen filtre", "Ingen filter hjul fundet på dette kamera")
+                return
+            
+            selected_index = self.filter_combo.current()
+            if selected_index < 0:
+                messagebox.showwarning("Intet valg", "Vælg et filter først")
+                return
+            
+            filter_info = filters[selected_index]
+            filter_index = filter_info.get('index', selected_index)
+            filter_name = filter_info.get('name', f"Filter {filter_index}")
+            
+            if self.moravian_camera.set_filter(filter_index):
+                self.log_camera_message(f"✅ Filter skiftet til: [{filter_index}] {filter_name}")
+            else:
+                messagebox.showerror("Fejl", f"Kunne ikke skifte til filter {filter_index}")
+                
+        except Exception as e:
+            messagebox.showerror("Fejl", f"Fejl ved sætning af filter: {str(e)}")
+    
+    def take_test_image(self):
+        """Tag et testbillede med 1 sekunds eksponering og fuld FITS header"""
+        self.log_camera_message("Forbereder testbillede...")
+        try:
+            # Tjek om kamera er tilgængeligt
+            camera = self.get_camera_for_observation()
+            if camera is None:
+                self.log_camera_message("❌ Intet kamera tilgængeligt til testbillede")
+                messagebox.showerror("Fejl", "Intet kamera tilgængeligt. Tilslut et kamera først.")
+                return
+            
+            # Vis status at vi tager et billede
+            status_msg = "Tager testbillede (1s)..."
+            self.log_camera_message("Tager testbillede med 1s eksponering...")
+            self.root.update_idletasks()
+            
+            # Exposure indstillinger
+            exposure_time = 1.0  # 1 sekund
+            
+            # Tag billede
+            if camera is self.moravian_camera and self.moravian_camera is not None:  # Moravian kamera
+                binning_x = self.camera_binning_x.get()
+                binning_y = self.camera_binning_y.get()
+                
+                # Sæt binning før billede
+                camera.set_binning(binning_x, binning_y)
+                
+                # Tag billede med Moravian kamera
+                image_data = camera.take_image(exposure_time)
+                
+                if image_data is None:
+                    messagebox.showerror("Fejl", "Kunne ikke tage billede med Moravian kamera")
+                    return
+                    
+                # Hent kamera info til FITS header
+                camera_info = camera.get_camera_info()
+            
+            # Timestamps for FITS header
+            from datetime import datetime, timezone
+            import pytz
+            
+            utc_time = datetime.now(timezone.utc)
+            exposure_start_time = utc_time
+            exposure_end_time = datetime.now(timezone.utc)
+            
+            # Teleskop information (hvis tilgængeligt)
+            try:
+                if self.pw4_client:
+                    pw4_status = self.pw4_client.status()
+                    ra_hours = pw4_status.mount.ra_j2000_hours
+                    dec_degrees = pw4_status.mount.dec_j2000_degs
+                    alt_degrees = pw4_status.mount.altitude_degs
+                    az_degrees = pw4_status.mount.azimuth_degs
+                else:
+                    pw4_status = None
+                    ra_hours = None
+                    dec_degrees = None
+                    alt_degrees = None
+                    az_degrees = None
+            except:
+                pw4_status = None
+                ra_hours = None
+                dec_degrees = None
+                alt_degrees = None
+                az_degrees = None
+            
+            # Hent filter information
+            filter_name = self.get_current_filter_name()
+            
+            # Opret FITS header
+            header = self.create_standard_fits_header(
+                obstype="TEST",
+                sat_name="TESTBILLEDE",
+                exposure_start_time=exposure_start_time,
+                exposure_end_time=exposure_end_time,
+                exposure_time=exposure_time,
+                tle1="",
+                tle2="",
+                norad_id="",
+                camera=camera_info,
+                pw4_status=pw4_status,
+                ra_hours=ra_hours,
+                dec_degrees=dec_degrees,
+                alt_degrees=alt_degrees,
+                az_degrees=az_degrees,
+                image_width=image_data.shape[1] if len(image_data.shape) > 1 else len(image_data),
+                image_height=image_data.shape[0] if len(image_data.shape) > 0 else 1,
+                x_binning=camera_info.get('BinX', 1),
+                y_binning=camera_info.get('BinY', 1),
+                filter_name=filter_name
+            )
+            
+            # Gem som FITS fil
+            from astropy.io import fits
+            import numpy as np
+            
+            # Opret HDU
+            hdu = fits.PrimaryHDU(data=np.array(image_data), header=header)
+            
+            # Generer filnavn med timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"testbillede_{timestamp}.fits"
+            
+            # Gem til samme folder som GUI
+            import os
+            filepath = os.path.join(os.path.dirname(__file__), filename)
+            hdu.writeto(filepath, overwrite=True)
+            
+            self.log_camera_message(f"✅ Testbillede gemt som: {filename}")
+            messagebox.showinfo("Succes", 
+                               f"Testbillede gemt som:\n{filename}\n\n"
+                               f"Eksponering: {exposure_time}s\n"
+                               f"Størrelse: {image_data.shape if hasattr(image_data, 'shape') else 'N/A'}\n"
+                               f"Temperatur: {camera_info.get('Temperature', 'N/A')}°C")
+            
+        except Exception as e:
+            self.log_camera_message(f"❌ Fejl ved testbillede: {str(e)}")
+            messagebox.showerror("Fejl", f"Fejl ved testbillede: {str(e)}")
+            import traceback
+            print(f"Testbillede fejl: {traceback.format_exc()}")
+    
+    def get_camera_for_observation(self):
+        """Hent kamera til brug i observationer - returnerer None hvis ikke tilgængelig"""
+        if self.camera_connected and self.moravian_camera is not None:
+            return self.moravian_camera
+        return None
+    
+    def get_current_filter_name(self):
+        """Hent navn på det aktuelt valgte filter"""
+        try:
+            if self.camera_connected and self.moravian_camera is not None:
+                # Hent filter info fra Moravian kamera
+                info = self.moravian_camera.get_camera_info()
+                filters = info.get('filters', [])
+                
+                if filters:
+                    # Prøv at hente aktuel filter position fra kamera
+                    current_filter = info.get('current_filter')
+                    if current_filter is not None:
+                        # Find filter navn baseret på position
+                        for filter_info in filters:
+                            if filter_info.get('index') == current_filter:
+                                return f"[{current_filter}] {filter_info.get('name', f'Filter {current_filter}')}"
+                    
+                    # Hvis ikke, prøv at få det fra GUI selection
+                    selected_filter = self.selected_filter.get()
+                    if selected_filter:
+                        return selected_filter
+            
+            # Fallback - hent filter fra GUI selection
+            selected_filter = self.selected_filter.get()
+            if selected_filter:
+                return selected_filter
+                
+        except Exception as e:
+            print(f"Fejl ved hentning af filter navn: {str(e)}")
+        
+        return None
+    
+    def create_standard_fits_header(self, obstype, sat_name, exposure_start_time, exposure_end_time, 
+                                   exposure_time, tle1, tle2, norad_id, camera=None, pw4_status=None, 
+                                   ra_hours=None, dec_degrees=None, alt_degrees=None, az_degrees=None,
+                                   image_width=None, image_height=None, x_binning=1, y_binning=1, filter_name=None,
+                                   mid_exposure_time=None):
+        """
+        Opretter en standard FITS header til både LeapFrog og Tracking observationer.
+        Tilpasset til at fungere med Moravian kamera objekter og PWI4 teleskop.
+        
+        Args:
+            obstype (str): Type af observation ('LeapFrog', 'Tracking', 'stjernehimmel')
+            sat_name (str): Satellit navn
+            exposure_start_time (datetime): Start tid for eksponering
+            exposure_end_time (datetime): Slut tid for eksponering  
+            exposure_time (float): Eksponeringstid i sekunder
+            tle1 (str): TLE linje 1
+            tle2 (str): TLE linje 2
+            norad_id (str): NORAD ID
+            camera (obj, optional): Moravian kamera objekt
+            pw4_status (dict, optional): PWI4 status data
+            ra_hours (float, optional): RA i timer (kun til LeapFrog)
+            dec_degrees (float, optional): DEC i grader (kun til LeapFrog)
+            alt_degrees (float, optional): Altitude i grader (kun til LeapFrog)
+            az_degrees (float, optional): Azimuth i grader (kun til LeapFrog)
+            image_width (int, optional): Billede bredde
+            image_height (int, optional): Billede højde
+            x_binning (int): X binning
+            y_binning (int): Y binning
+            filter_name (str, optional): Navn på det anvendte filter
+            
+        Returns:
+            fits.Header: Komplet FITS header
+        """
+        header = fits.Header()
+        
+        # Standard FITS headers
+        header['SIMPLE'] = True
+        header['BITPIX'] = 16
+        header['NAXIS'] = 2
+        
+        # Billede dimensioner
+        if image_width and image_height:
+            header['NAXIS1'] = image_width
+            header['NAXIS2'] = image_height
+        elif camera is not None:
+            # Check if it's a Moravian camera
+            if hasattr(camera, 'get_camera_info'):
+                info = camera.get_camera_info()
+                ccd_width = info.get('width', 0)
+                ccd_height = info.get('height', 0)
+                header['NAXIS1'] = ccd_width // camera.bin_x
+                header['NAXIS2'] = ccd_height // camera.bin_y
+                
+        
+        # Observation info
+        header['OBJECT'] = sat_name
+        header['OBSTYPE'] = obstype
+        header['EXPTIME'] = exposure_time
+        
+        # Tidsstempel felter - præcis timing kun for Tracking observationer
+        if obstype == 'Tracking' and mid_exposure_time is not None:
+            # Brug præcis målt midtertidspunkt for Tracking (hvor PWI4 status blev hentet)
+            calculated_mid_time = mid_exposure_time
+        else:
+            # Brug beregnede midtertidspunkt for LeapFrog og andre observation typer
+            calculated_mid_time = exposure_start_time + timedelta(seconds=(exposure_end_time - exposure_start_time).total_seconds() / 2)
+        
+        header['DATE-STA'] = exposure_start_time.isoformat()  # Start eksponering
+        header['DATE-OBS'] = calculated_mid_time.isoformat()   # Midt i eksponering (præcis for Tracking)
+        header['DATE-END'] = exposure_end_time.isoformat()   # Slut eksponering
+        
+        header['OBSERVER'] = 'Satellite Tracking GUI'
+        
+        # Kamera info
+        if camera is not None:
+            # Check if it's a Moravian camera
+            if hasattr(camera, 'get_camera_info'):
+                info = camera.get_camera_info()
+                header['INSTRUME'] = info.get('description', 'Moravian Camera')
+                header['XBINNING'] = camera.bin_x
+                header['YBINNING'] = camera.bin_y
+                
+                # Tilføj ekstra Moravian kamera parametre
+                if 'pixel_width' in info:
+                    header['XPIXSZ'] = info['pixel_width'] * camera.bin_x
+                if 'pixel_height' in info:
+                    header['YPIXSZ'] = info['pixel_height'] * camera.bin_y
+                if 'temperature' in info:
+                    header['CCD-TEMP'] = info['temperature']
+                if 'serial' in info:
+                    header['CAMERA_S'] = info['serial']
+                if 'current_gain' in info:
+                    header['GAIN'] = info['current_gain']
+                if 'gain_db' in info:
+                    header['GAIN_DB'] = info['gain_db']
+            else:
+                # Fallback værdier
+                header['INSTRUME'] = 'Unknown Camera'
+                header['XBINNING'] = x_binning
+                header['YBINNING'] = y_binning
+        else:
+            # Fallback værdier
+            header['INSTRUME'] = 'Unknown Camera'
+            header['XBINNING'] = x_binning
+            header['YBINNING'] = y_binning
+        
+        # Filter information
+        if filter_name is not None:
+            header['FILTER'] = filter_name
+        elif camera is not None and hasattr(camera, 'get_camera_info'):
+            # Prøv at hente aktuel filter fra Moravian kamera
+            try:
+                info = camera.get_camera_info()
+                current_filter = info.get('current_filter')
+                if current_filter is not None:
+                    header['FILTER'] = f"Filter {current_filter}"
+            except:
+                pass
+        
+        # PWI4 teleskop koordinater (hvis tilgængelige)
+        if pw4_status:
+            mount_data = pw4_status.get('mount', {})
+            
+            # RA/DEC koordinater - afrundet til 7 decimaler
+            if 'ra_apparent_hours' in mount_data:
+                header['RA_APP'] = round(float(mount_data['ra_apparent_hours']), 7)
+            if 'dec_apparent_degs' in mount_data:
+                header['DEC_APP'] = round(float(mount_data['dec_apparent_degs']), 7)
+            if 'ra_j2000_hours' in mount_data:
+                header['RA_J2000'] = round(float(mount_data['ra_j2000_hours']), 7)
+                header['RA_TEL'] = round(float(mount_data['ra_j2000_hours']) * 15.0, 7)  # omregner fra timer til grader
+            if 'dec_j2000_degs' in mount_data:
+                header['DEC_J200'] = round(float(mount_data['dec_j2000_degs']), 7)  # Kort navn pga. FITS begrænsning
+                header['DEC_TEL'] = round(float(mount_data['dec_j2000_degs']), 7)  # Alias for kompatibilitet
+                
+            # J2000 koordinater i grader (decimal) - for både tracking og leapfrog
+            if 'ra_j2000_hours' in mount_data:
+                header['RA'] = round(float(mount_data['ra_j2000_hours']) * 15.0, 7)  # Timer til grader
+                header['DEC'] = round(float(mount_data['dec_j2000_degs']), 7)
+                
+            # Ekstra koordinat formater
+            if 'ra_apparent_degs' in mount_data:
+                header['RA_APPD'] = round(float(mount_data['ra_apparent_degs']), 7)
+            if 'ra_j2000_degs' in mount_data:
+                header['RA_J2KD'] = round(float(mount_data['ra_j2000_degs']), 7)
+                
+            # Teleskop status
+            if 'is_slewing' in mount_data:
+                header['SLEWING'] = mount_data['is_slewing']
+            if 'is_tracking' in mount_data:
+                header['TRACKING'] = mount_data['is_tracking']
+            if 'altitude_degs' in mount_data:
+                header['ALTITUDE'] = round(float(mount_data['altitude_degs']), 7)
+                header['ALT_TEL'] = round(float(mount_data['altitude_degs']), 7)  # Alias
+            if 'azimuth_degs' in mount_data:
+                header['AZIMUTH'] = round(float(mount_data['azimuth_degs']), 7)
+                header['AZ_TEL'] = round(float(mount_data['azimuth_degs']), 7)  # Alias
+                
+            # PWI4 specifikke felter
+            header['TELESCOP'] = 'PlaneWave PWI4'
+            if 'julian_date' in mount_data:
+                header['JD'] = float(mount_data['julian_date'])
+            if 'field_angle_degs' in mount_data:
+                header['CROTA2'] = round(float(mount_data['field_angle_degs']), 7)
+            if 'distance_to_sun_degs' in mount_data:
+                header['DIST_SUN'] = round(float(mount_data['distance_to_sun_degs']), 7)
+                
+            # Observer position
+            site_data = pw4_status.get('site', {})
+            if 'latitude_degs' in site_data:
+                header['LAT-OBS'] = round(float(site_data['latitude_degs']), 7)
+            if 'longitude_degs' in site_data:
+                header['LONG-OBS'] = round(float(site_data['longitude_degs']), 7)
+            if 'height_meters' in site_data:
+                header['ELEV-OBS'] = round(float(site_data['height_meters']), 3)
+                
+            # PWI4 version
+            pwi4_data = pw4_status.get('pwi4', {})
+            if 'version' in pwi4_data:
+                header['PWI4VER'] = pwi4_data['version']
+        
+        # LeapFrog satellite koordinater (planlagte - kun hvis angivet)
+        if ra_hours is not None and dec_degrees is not None:
+            header['Leap_RA'] = (ra_hours, 'Planned satellite RA (hours)')
+            header['Leap_DEC'] = (dec_degrees, 'Planned satellite DEC (degrees)')
+            if alt_degrees is not None:
+                header['Leap_ALT'] = (alt_degrees, 'Planned satellite altitude (degrees)')
+            if az_degrees is not None:
+                header['Leap_AZ'] = (az_degrees, 'Planned satellite azimuth (degrees)')
+
+        # TLE info
+        header['TLE1'] = tle1
+        header['TLE2'] = tle2
+        header['NORAD_ID'] = norad_id
+        
+        # Tilføj kommentar afhængig af observation type
+        if obstype == 'LeapFrog':
+            header["COMMENT"] = f"LeapFrog observation point for {sat_name}"
+        elif obstype == 'Tracking':
+            header["COMMENT"] = f"Satellite tracking image for {sat_name}"
+        elif obstype == 'stjernehimmel':
+            header["COMMENT"] = "Star field reference image during satellite tracking"
+            header["REFIMAGE"] = True
+        
+        return header
+
+    # =================
+    # LEAPFROG METODER
+    # =================
+    
+    def log_message(self, message):
+        """Tilføj besked til log"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.log_text.see(tk.END)
+        self.root.update()
+    
+    def get_selected_satellite(self):
+        """Henter den valgte satellit fra satellitlisten"""
+        try:
+            selection = self.satellite_tree.selection()
+            if not selection:
+                messagebox.showwarning("Ingen valg", "Vælg venligst en satelitt fra listen")
+                return
+            
+            item = selection[0]
+            values = self.satellite_tree.item(item, 'values')
+            
+            # Udtræk satellit information
+            self.selected_satellite = {
+                'SatName': values[0],
+                'NORAD': values[1],
+                'StartTime': values[2],
+                'EndTime': values[4],
+                'TLE1': self.get_full_tle_from_selection(item)[0],
+                'TLE2': self.get_full_tle_from_selection(item)[1]
+            }
+            
+            # Vis satellit info
+            info_text = f"Satellit: {self.selected_satellite['SatName']}\n"
+            info_text += f"NORAD ID: {self.selected_satellite['NORAD']}\n"
+            info_text += f"Observation: {self.selected_satellite['StartTime']} - {self.selected_satellite['EndTime']}"
+            
+            self.sat_info_text.delete(1.0, tk.END)
+            self.sat_info_text.insert(1.0, info_text)
+            
+            self.log_message(f"Valgt satellit: {self.selected_satellite['SatName']}")
+            
+        except Exception as e:
+            messagebox.showerror("Fejl", f"Kunne ikke hente satellit information: {str(e)}")
+    
+    def get_full_tle_from_selection(self, item):
+        """Henter fulde TLE linjer fra den valgte satellit"""
+        try:
+            # Find den fulde TLE fra df_merged baseret på valgte række
+            item_values = self.satellite_tree.item(item, 'values')
+            sat_name = item_values[0]
+            norad_id = item_values[1]
+            
+            # Find satellitten i df_merged
+            mask = (self.df_merged['SatName'] == sat_name) & (self.df_merged['NORAD'].astype(str) == str(norad_id))
+            satellite_row = self.df_merged[mask].iloc[0]
+            
+            return satellite_row['TLE1'], satellite_row['TLE2']
+            
+        except Exception as e:
+            self.log_message(f"Fejl ved hentning af TLE: {str(e)}")
+            return None, None
+    
+    def calculate_leapfrog_data(self):
+        """Beregner LeapFrog data baseret på valgt satellit"""
+        try:
+            if not hasattr(self, 'selected_satellite'):
+                messagebox.showwarning("Ingen satellit", "Vælg først en satellit")
+                return
+            
+            self.log_message("Beregner LeapFrog data...")
+            
+            # Hent koordinater og UTC offset fra satellit tab
+            lat = float(self.lat_entry.get())
+            lng = float(self.lng_entry.get())
+            ele = float(self.ele_entry.get())
+            utc_offset = float(self.utc_offset_entry.get())
+            
+            # Hent og valider interval mellem observationer
+            try:
+                interval_between_obs = float(self.leapfrog_interval_entry.get())
+                if interval_between_obs <= 0 or interval_between_obs > 300:
+                    messagebox.showerror("Ugyldig interval", "Interval mellem observationer skal være mellem 0.1 og 300 sekunder")
+                    return
+            except ValueError:
+                messagebox.showerror("Ugyldig interval", "Interval skal være et gyldigt tal")
+                return
+            
+            # Parse TLE og tider
+            satellite_name = self.selected_satellite['SatName']
+            satellite_id = self.selected_satellite['NORAD']
+            start_time_str = self.selected_satellite['StartTime']
+            end_time_str = self.selected_satellite['EndTime']
+            tle_line1 = self.selected_satellite['TLE1']
+            tle_line2 = self.selected_satellite['TLE2']
+            
+            # Beregn tidsintervaller - konverter til UTC for satellit beregninger
+            today = datetime.now().date()
+            # Start- og sluttider er allerede i lokal tid (med UTC offset), så vi konverterer til UTC
+            # Håndter både HH:MM og HH:MM:SS formater
+            try:
+                start_tid_local = datetime.combine(today, datetime.strptime(start_time_str, "%H:%M:%S").time())
+            except ValueError:
+                start_tid_local = datetime.combine(today, datetime.strptime(start_time_str, "%H:%M").time())
+            
+            try:
+                slut_tid_local = datetime.combine(today, datetime.strptime(end_time_str, "%H:%M:%S").time())
+            except ValueError:
+                slut_tid_local = datetime.combine(today, datetime.strptime(end_time_str, "%H:%M").time())
+            
+            # Konverter til UTC ved at trække UTC offset fra
+            start_tid_utc = start_tid_local - timedelta(hours=utc_offset)
+            slut_tid_utc = slut_tid_local - timedelta(hours=utc_offset)
+            
+            # Hent interval mellem observationer fra UI
+            interval_between_obs = float(self.leapfrog_interval_entry.get())
+            
+            # Opret tidsintervaller baseret på brugervalgt interval i UTC
+            tidspunkter_utc = [start_tid_utc + timedelta(seconds=i*interval_between_obs) for i in range(int((slut_tid_utc-start_tid_utc).total_seconds()/interval_between_obs)+1)]
+            
+            # Opret DataFrame med UTC tider for satellit beregninger
+            self.df_leapfrog = pd.DataFrame({"DATE-OBS": [dt.strftime("%Y-%m-%d %H:%M:%S.%f") for dt in tidspunkter_utc]})
+            self.df_leapfrog["LAT--OBS"] = lat
+            self.df_leapfrog["LONG-OBS"] = lng
+            self.df_leapfrog["ELEV-OBS"] = ele
+            
+            # Beregn satellit positioner (bruger UTC tider)
+            afstand, vinkel, sat_pos, earth_pos, obs_points = calculate_satellite_data(self.df_leapfrog, tle_line1, tle_line2)
+            sat_positions = np.array(sat_pos)
+            obs_points = np.array(obs_points)
+            
+            # Beregn retning til satellit
+            x_list = sat_positions[:,0] - obs_points[:,0]
+            y_list = sat_positions[:,1] - obs_points[:,1]
+            z_list = sat_positions[:,2] - obs_points[:,2]
+            
+            ra_tle, dec_tle = np.vectorize(self.xyz_to_radec)(x_list, y_list, z_list)
+            self.df_leapfrog['Sat_RA'] = ra_tle
+            self.df_leapfrog['Sat_DEC'] = dec_tle
+            
+            # Konverter RA til timer format
+            self.df_leapfrog['Sat_RA_Hr'] = self.ra_deg_to_hms(ra_tle)
+            
+            # Beregn Alt/Az (bruger UTC tider)
+            alt_list, az_list = self.tle_to_altaz(tle_line1, tle_line2, lat, lng, ele, tidspunkter_utc)
+            self.df_leapfrog['Sat_Alt'] = alt_list
+            self.df_leapfrog['Sat_Az'] = az_list
+            
+            # Konverter DATE-OBS tilbage til lokal tid for visning
+            self.df_leapfrog['DATE-OBS'] = [(datetime.strptime(dt, "%Y-%m-%d %H:%M:%S.%f") + timedelta(hours=utc_offset)).strftime("%Y-%m-%d %H:%M:%S.%f") for dt in self.df_leapfrog['DATE-OBS']]
+            
+            # Beregn XYZ for plotting
+            xyz = [ra_dec_to_eci(ra, dec, r) + obs for ra, dec, r, obs in zip(self.df_leapfrog['Sat_RA'], self.df_leapfrog['Sat_DEC'], afstand, obs_points)]
+            self.df_leapfrog['xyz'] = xyz
+            
+            # Gem data til plotting
+            self.sat_positions = sat_positions
+            self.obs_points = obs_points
+            self.afstand = afstand
+            self.utc_offset = utc_offset  # Gem til senere brug
+            
+            # Opdater tabel
+            self.update_leapfrog_table()
+            
+            self.log_message(f"LeapFrog data beregnet for {len(self.df_leapfrog)} punkter (interval: {interval_between_obs}s, UTC offset: {utc_offset} timer)")
+            
+        except Exception as e:
+            self.log_message(f"Fejl ved beregning: {str(e)}")
+            messagebox.showerror("Fejl", f"Kunne ikke beregne LeapFrog data: {str(e)}")
+    
+    def xyz_to_radec(self, x, y, z):
+        """Konverter XYZ til RA/DEC"""
+        r = np.array([x, y, z], dtype=float)
+        norm = np.linalg.norm(r)
+        if norm == 0:
+            raise ValueError("Vector has zero length")
+        ra_rad = np.arctan2(r[1], r[0]) % (2*np.pi)
+        dec_rad = np.arcsin(r[2]/norm)
+        return np.degrees(ra_rad), np.degrees(dec_rad)
+    
+    def ra_deg_to_hms(self, ra_deg_array):
+        """Konverter RA grader til HH:MM:SS format"""
+        RA_hours = ra_deg_array / 15
+        hours = np.floor(RA_hours).astype(int)
+        minutes = np.floor((RA_hours - hours)*60).astype(int)
+        seconds = ((RA_hours - hours)*60 - minutes)*60
+        return [f"{h:02d}:{m:02d}:{s:06.3f}" for h, m, s in zip(hours, minutes, seconds)]
+    
+    def tle_to_altaz(self, tle1, tle2, observer_lat, observer_lon, observer_ele, datetime_list, name="SAT"):
+        """Beregn Alt/Az fra TLE"""
+        ts = load.timescale()
+        satellite = EarthSatellite(tle1, tle2, name)
+        observer = Topos(latitude_degrees=observer_lat, longitude_degrees=observer_lon, elevation_m=observer_ele)
+        alt_list, az_list = [], []
+        for dt in datetime_list:
+            t = ts.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second + dt.microsecond/1e6)
+            topocentric = (satellite - observer).at(t)
+            alt, az, _ = topocentric.altaz()
+            alt_list.append(alt.degrees)
+            az_list.append(az.degrees)
+        return alt_list, az_list
+    
+    def update_leapfrog_table(self):
+        """Opdater LeapFrog data tabel"""
+        # Ryd tidligere data
+        for item in self.leapfrog_tree.get_children():
+            self.leapfrog_tree.delete(item)
+        
+        if self.df_leapfrog is not None:
+            for _, row in self.df_leapfrog.iterrows():
+                values = (
+                    row['DATE-OBS'],
+                    f"{row['Sat_DEC']:.4f}°",
+                    row['Sat_RA_Hr'],
+                    f"{row['Sat_Alt']:.2f}°",
+                    f"{row['Sat_Az']:.2f}°"
+                )
+                self.leapfrog_tree.insert('', 'end', values=values)
+    
+    def show_leapfrog_plot(self):
+        """Vis 3D plot af LeapFrog data"""
+        if not PLOTLY_AVAILABLE:
+            messagebox.showerror("Fejl", "Plotly er ikke installeret")
+            return
+        
+        if self.df_leapfrog is None:
+            messagebox.showwarning("Ingen data", "Beregn først LeapFrog data")
+            return
+        
+        try:
+            # Jordens radius i km
+            earth_radius = 6371
+            
+            # Opret en kugle for Jorden
+            u, v = np.mgrid[0:2*np.pi:100j, 0:np.pi:50j]
+            x = earth_radius * np.cos(u) * np.sin(v)
+            y = earth_radius * np.sin(u) * np.sin(v)
+            z = earth_radius * np.cos(v)
+            
+            # Opret figuren
+            fig = go.Figure()
+            
+            # Plot satellitens bane
+            fig.add_trace(go.Scatter3d(
+                x=self.sat_positions[:, 0],
+                y=self.sat_positions[:, 1],
+                z=self.sat_positions[:, 2],
+                mode='lines',
+                name='Satellitbane',
+                line=dict(color='blue', width=2)
+            ))
+            
+            # Plot observationspunkter
+            fig.add_trace(go.Scatter3d(
+                x=self.obs_points[:, 0],
+                y=self.obs_points[:, 1],
+                z=self.obs_points[:, 2],
+                mode='markers',
+                name='Observationspunkt',
+                marker=dict(size=1, color='red')
+            ))
+            
+            # Plot Jorden som en kugle
+            fig.add_trace(go.Surface(
+                x=x, y=y, z=z,
+                colorscale='Blues',
+                opacity=0.5,
+                showscale=False,
+                name='Jorden'
+            ))
+            
+            # Tilføj punkterne fra teleskop retning
+            fig.add_trace(go.Scatter3d(
+                x=self.df_leapfrog['xyz'].apply(lambda xyz: xyz[0]),
+                y=self.df_leapfrog['xyz'].apply(lambda xyz: xyz[1]),
+                z=self.df_leapfrog['xyz'].apply(lambda xyz: xyz[2]),
+                mode='markers',
+                name='Teleskop retning',
+                marker=dict(size=3, color='green', opacity=0.6)
+            ))
+            
+            # Tilføj akseetiketter og titel
+            fig.update_layout(
+                scene=dict(
+                    xaxis_title='X (km)',
+                    yaxis_title='Y (km)',
+                    zaxis_title='Z (km)',
+                ),
+                title='LeapFrog Satellitbane og observationspunkt i ECI-koordinatsystemet',
+                showlegend=True
+            )
+            
+            # Vis plottet
+            pyo.plot(fig, filename='leapfrog_plot.html', auto_open=True)
+            
+            self.log_message("3D plot genereret og åbnet i browser")
+            
+        except Exception as e:
+            self.log_message(f"Fejl ved plotting: {str(e)}")
+            messagebox.showerror("Fejl", f"Kunne ikke generere plot: {str(e)}")
+    
+    def start_leapfrog_observation(self):
+        """Start LeapFrog observation i separat tråd"""
+        if self.df_leapfrog is None:
+            messagebox.showwarning("Ingen data", "Beregn først LeapFrog data")
+            return
+        
+        if self.leapfrog_observation_running:
+            messagebox.showwarning("Observation kører", "En observation kører allerede")
+            return
+            
+        # Tjek kamera tilgængelighed først
+        camera = self.get_camera_for_observation()
+        if camera is None:
+            messagebox.showerror("Kamera ikke tilgængelig", 
+                               "Moravian kamera ikke tilsluttet eller ikke tilgængeligt.\n\n"
+                               "Tilslut kameraet i kameraindstillinger først.\n"
+                               "Sørg for at Moravian SDK er installeret og kameraet er forbundet.")
+            return
+        
+        # Tjek PWI4 tilgængelighed for teleskop
+        if not PWI4_AVAILABLE:
+            messagebox.showerror("PWI4 bibliotek ikke tilgængelig", 
+                               "PWI4 bibliotek ikke installeret.\n\n"
+                               "Sørg for at pwi4_client.py er tilgængelig i samme mappe som GUI.py")
+            return
+        
+        # Tjek om observation er startet for sent
+        current_time = datetime.now()
+        utc_offset = getattr(self, 'utc_offset', 2)
+        df_work = self.df_leapfrog.copy()
+        
+        # DATE-OBS er nu i lokal tid (efter konvertering i calculate_leapfrog_data)
+        df_work['DATE-OBS'] = pd.to_datetime(df_work['DATE-OBS'])
+        
+        # Find hvor mange punkter der er passeret - sammenlign lokal tid med lokal tid
+        passed_points = 0
+        for _, row in df_work.iterrows():
+            planned_time_local = row['DATE-OBS']  # Dette er allerede i lokal tid
+            if planned_time_local < current_time:
+                passed_points += 1
+            else:
+                break
+        
+        if passed_points > 0:
+            remaining_points = len(df_work) - passed_points
+            if remaining_points == 0:
+                messagebox.showerror("For sent", "Alle observationspunkter er allerede passeret!")
+                return
+            else:
+                result = messagebox.askyesno(
+                    "Observation startet sent", 
+                    f"{passed_points} af {len(df_work)} punkter er allerede passeret.\n"
+                    f"Vil du fortsætte med de resterende {remaining_points} punkter?"
+                )
+                if not result:
+                    return
+        
+        # Skift knap tilstande
+        self.start_obs_btn.config(state='disabled')
+        self.stop_obs_btn.config(state='normal')
+        
+        # Start observation i separat tråd
+        self.stop_observation = False
+        threading.Thread(target=self.run_leapfrog_observation, daemon=True).start()
+    
+    def stop_leapfrog_observation(self):
+        """Stop LeapFrog observation"""
+        self.stop_observation = True
+        self.log_message("Stop signal sendt...")
+    
+    def wait_until(self, target_time):
+        """Vent til det ønskede tidspunkt - springer over hvis tiden allerede er passeret"""
+        current_time = datetime.now()
+        if target_time <= current_time:
+            # Tiden er allerede passeret, venter ikke
+            return
+        
+        while datetime.now() < target_time and not self.stop_observation:
+            time.sleep(0.05)
+    
+    def hms_to_hours(self, hms_str):
+        """Konverter RA HH:MM:SS.sss til decimal timer."""
+        h, m, s = map(float, hms_str.split(":"))
+        return h + m/60 + s/3600
+    
+    def run_leapfrog_observation(self):
+        """Kør LeapFrog observation"""
+        try:
+            self.leapfrog_observation_running = True
+            self.log_message("Starter LeapFrog observation...")
+            
+            # Kør rigtig observation med PWI4
+            if PWI4_AVAILABLE:
+                self._execute_leapfrog_observation()
+            else:
+                self.log_message("FEJL: PWI4 bibliotek ikke tilgængeligt")
+                self.log_message("Installer pwi4_client.py i samme mappe som GUI.py")
+                raise Exception("PWI4 bibliotek ikke installeret - kan ikke køre observation")
+                
+        except Exception as e:
+            self.log_message(f"Fejl under observation: {str(e)}")
+        finally:
+            self.leapfrog_observation_running = False
+            self.start_obs_btn.config(state='normal')
+            self.stop_obs_btn.config(state='disabled')
+            self.log_message("Observation afsluttet")
+    
+    def _execute_leapfrog_observation(self):
+        """Kør rigtig observation med PWI4"""
+        try:
+            # Hent parametre (binning fra kameraindstillinger)
+            x_binning = self.camera_binning_x.get()
+            y_binning = self.camera_binning_y.get()
+            pw4_url = self.leapfrog_pw4_url_entry.get().strip()
+            exposure_time = float(self.leapfrog_exposure_time_entry.get())
+            interval_between_obs = float(self.leapfrog_interval_entry.get())
+            
+            # Hent kamera timing parametre
+            camera_start_before = float(self.leapfrog_camera_start_entry.get())
+            camera_stop_after = float(self.leapfrog_camera_stop_entry.get())
+            slew_delay = float(self.leapfrog_slew_delay_entry.get())
+            
+            # Valider parametre
+            if x_binning < 1 or y_binning < 1 or x_binning > 16 or y_binning > 16:
+                messagebox.showerror("Ugyldig binning", "Binning skal være mellem 1 og 16")
+                return
+            
+            if exposure_time <= 0 or exposure_time > 60:
+                messagebox.showerror("Ugyldig exposure time", "Exposure time skal være mellem 0.1 og 60 sekunder")
+                return
+                
+            if interval_between_obs < 0 or interval_between_obs > 300:
+                messagebox.showerror("Ugyldig interval", "Interval mellem observationer skal være mellem 0 og 300 sekunder")
+                return
+                
+            if camera_start_before < 0 or camera_start_before > 30:
+                messagebox.showerror("Ugyldig kamera start tid", "Kamera start tid skal være mellem 0 og 30 sekunder")
+                return
+                
+            if camera_stop_after < 0 or camera_stop_after > 30:
+                messagebox.showerror("Ugyldig kamera stop tid", "Kamera stop tid skal være mellem 0 og 30 sekunder")
+                return
+                
+            if slew_delay < 0 or slew_delay > 10:
+                messagebox.showerror("Ugyldig slew delay", "Slew delay skal være mellem 0 og 10 sekunder")
+                return
+            
+            # Opret mappe struktur
+            sat_name = self.selected_satellite['SatName']
+            norad_id = self.selected_satellite['NORAD']
+            session_date = datetime.now().strftime("%m_%d")
+            
+            # Rens satellit navn for filsystem
+            safe_sat_name = "".join(c for c in sat_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_sat_name = safe_sat_name.replace(' ', '_')
+            
+            session_dir = os.path.join(os.getcwd(), f"LeapFrog_{safe_sat_name}_{norad_id}_{session_date}")
+            os.makedirs(session_dir, exist_ok=True)
+            
+            self.log_message(f"Satellit: {sat_name}")
+            self.log_message(f"Binning: {x_binning}x{y_binning}")
+            self.log_message(f"Session mappe: {session_dir}")
+            
+            # Tilslut teleskop og kamera
+            self.log_message("Tilslutter teleskop og kamera...")
+            
+            # PWI4 teleskop forbindelse
+            if not PWI4_AVAILABLE:
+                raise Exception("PWI4 bibliotek ikke tilgængeligt for teleskop kontrol")
+            
+            telescope = PWI4Telescope(host=pw4_url.replace("http://", "").split(":")[0], 
+                                     port=int(pw4_url.split(":")[-1]) if ":" in pw4_url else 8220)
+            
+            if not telescope.test_connection():
+                raise Exception(f"Kan ikke forbinde til PWI4 på {pw4_url}")
+            
+            telescope.connect()
+            self.log_message(f"PWI4 teleskop tilsluttet succesfuldt")
+            
+            # Kamera forbindelse (nu via Moravian)
+            camera = self.get_camera_for_observation()
+            if camera is None:
+                raise Exception("Moravian kamera ikke tilsluttet eller ikke tilgængeligt.\n\nTilslut kameraet i kameraindstillinger først.")
+            
+            # Sæt kamera parametre med binning
+            camera.set_binning(x_binning, y_binning)
+            
+            # Professionel kamera konfiguration for Moravian kameraer
+            info = camera.get_camera_info()
+            camera_desc = info.get('description', 'Moravian Camera')
+            ccd_width = info.get('width', 0)
+            ccd_height = info.get('height', 0)
+            
+            self.log_message(f"Konfigurerer kamera: {camera_desc}")
+            self.log_message(f"CCD størrelse: {ccd_width} x {ccd_height} pixels")
+            self.log_message(f"Binning sat til: {x_binning}x{y_binning}")
+            
+            # Beregn korrekt billedstørrelse baseret på binning
+            image_width = ccd_width // x_binning
+            image_height = ccd_height // y_binning
+            
+            self.log_message(f"Beregnet billedstørrelse: {image_width}x{image_height} pixels")
+            
+            # Verificer binning
+            max_binning_x = info.get('max_binning_x', 8)
+            max_binning_y = info.get('max_binning_y', 8)
+            
+            if x_binning > max_binning_x or y_binning > max_binning_y:
+                raise Exception(f"Binning {x_binning}x{y_binning} overstiger kamera max: {max_binning_x}x{max_binning_y}")
+            
+            self.log_message(f"Kamera konfiguration bekræftet:")
+            self.log_message(f"  Binning: {camera.bin_x}x{camera.bin_y}")
+            self.log_message(f"  Billedstørrelse: {image_width}x{image_height} pixels")
+            
+            # Temperatur info
+            current_temp = info.get('temperature', None)
+            if current_temp is not None:
+                self.log_message(f"  Kamera temperatur: {current_temp:.1f}°C")
+            
+            # Konverter DATE-OBS til datetime
+            df_work = self.df_leapfrog.copy()
+            df_work['DATE-OBS'] = pd.to_datetime(df_work['DATE-OBS'])
+            
+            # Tjek om observation er startet for sent
+            current_time = datetime.now()
+            utc_offset = getattr(self, 'utc_offset', 2)
+            
+            # Find det første punkt der er efter nuværende tid
+            start_index = 0
+            for i, row in df_work.iterrows():
+                planned_time_local = row['DATE-OBS']  # Dette er allerede i lokal tid
+                if planned_time_local > current_time:
+                    start_index = i
+                    break
+            else:
+                # Alle punkter er passeret
+                self.log_message("ADVARSEL: Alle observationspunkter er passeret! Observationen springer over.")
+                return
+            
+            if start_index > 0:
+                self.log_message(f"Springer over de første {start_index} punkter (allerede passeret)")
+            
+            # Gennemløb af alle punkter fra start_index
+            for i, row in df_work.iloc[start_index:].iterrows():
+                if self.stop_observation:
+                    self.log_message("Observation stoppet af bruger")
+                    break
+                
+                ra_str = row['Sat_RA_Hr']
+                dec = float(row['Sat_DEC'])
+                planned_time = row['DATE-OBS']  # Dette er i lokal tid
+                
+                # Beregn tider i lokal tid med brugervalgte værdier
+                camera_start_time = planned_time - timedelta(seconds=camera_start_before)
+                camera_stop_time = planned_time + timedelta(seconds=camera_stop_after)
+                slew_next_time = camera_stop_time + timedelta(seconds=slew_delay)
+                
+                # Konverter RA til decimal timer
+                ra_hours = self.hms_to_hours(ra_str)
+                
+                self.log_message(f"Punkt {i+1}/{len(df_work)}: Planlægger slew til RA: {ra_str} ({ra_hours:.6f} timer), DEC: {dec:.6f} grader")
+                
+                # Slew til position ved hjælp af PWI4
+                telescope.slew_to_coordinates(ra_hours, dec, coord_type="j2000")
+                
+                # Vent på slew færdig
+                while telescope.is_slewing() and not self.stop_observation:
+                    time.sleep(0.1)
+                
+                if self.stop_observation:
+                    break
+                
+                self.log_message(f"Slew færdig. Venter til kamera starttid: {camera_start_time}")
+                
+                # Vent og start kamera
+                self.wait_until(camera_start_time)
+                if self.stop_observation:
+                    break
+                
+                self.log_message("Starter eksponering")
+                
+                # Start eksponering
+                current_time = datetime.now()
+                image_counter = 1
+                
+                while current_time < camera_stop_time and not self.stop_observation:
+                    if current_time + timedelta(seconds=exposure_time) > camera_stop_time:
+                        break
+                    
+                    try:
+                        # *** OPTIMERET LEAPFROG EKSPONERING ***
+                        leapfrog_result = self.optimized_camera_exposure_with_timing(
+                            camera=camera, 
+                            exposure_time=exposure_time, 
+                            pw4_client=telescope,
+                            pw4_url=pw4_url,
+                            obstype='LeapFrog'
+                        )
+                        
+                        if leapfrog_result is None:  # Afbrudt af bruger
+                            break
+                        
+                        # Udpak resultater fra optimeret timing
+                        image_data = leapfrog_result['image_data']
+                        exposure_start_time = leapfrog_result['exposure_start_time']
+                        exposure_end_time = leapfrog_result['exposure_end_time']
+                        pw4_status = leapfrog_result['pw4_status']
+                        
+                        self.log_message(f"LeapFrog timing nøjagtighed: {leapfrog_result['timing_accuracy']:.1f}ms")
+                        
+                        if self.stop_observation:
+                            break
+                        
+                        # Hent filter information
+                        filter_name = self.get_current_filter_name()
+                        
+                        # Opret FITS header med standard metode
+                        header = self.create_standard_fits_header(
+                            obstype='LeapFrog',
+                            sat_name=sat_name,
+                            exposure_start_time=exposure_start_time,
+                            exposure_end_time=exposure_end_time,
+                            exposure_time=exposure_time,
+                            tle1=self.selected_satellite['TLE1'],
+                            tle2=self.selected_satellite['TLE2'],
+                            norad_id=self.selected_satellite['NORAD'],
+                            camera=camera,
+                            pw4_status=pw4_status,
+                            ra_hours=ra_hours,
+                            dec_degrees=dec,
+                            alt_degrees=row.get('Sat_Alt', 0),
+                            az_degrees=row.get('Sat_Az', 0),
+                            image_width=image_data.shape[1],
+                            image_height=image_data.shape[0],
+                            filter_name=filter_name
+                        )
+                        
+                        # Gem FITS fil med komplet header
+                        timestamp = datetime.now().strftime("%H%M%S")
+                        filename = f"LeapFrog_{safe_sat_name}_{norad_id}_{timestamp}_{image_counter:03d}.fits"
+                        filepath = os.path.join(session_dir, filename)
+                        
+                        # Konverter til uint16 for FITS
+                        image_data_uint16 = image_data.astype(np.uint16)
+                        
+                        hdu = fits.PrimaryHDU(data=image_data_uint16, header=header)
+                        hdu.writeto(filepath, overwrite=True)
+                        
+                        self.log_message(f"Billede {image_counter} gemt: {filename}")
+                        image_counter += 1
+                        
+                    except Exception as e:
+                        self.log_message(f"Fejl ved tag af billede {image_counter}: {str(e)}")
+                    
+                    current_time = datetime.now()
+                
+                # Hvis der er flere punkter, planlæg næste slew
+                if i < len(df_work) - 1:
+                    self.log_message(f"Venter til næste slew tid: {slew_next_time}")
+                    self.wait_until(slew_next_time)
+            
+            self.log_message("LeapFrog observation færdig!")
+            
+        except Exception as e:
+            self.log_message(f"Observation fejl: {str(e)}")
+        finally:
+            try:
+                if 'telescope' in locals():
+                    telescope.park()
+                    self.log_message("PWI4 teleskop afbrudt")
+            except Exception as e:
+                self.log_message(f"Fejl ved afbrydelse af teleskop: {str(e)}")
+            
+            self.log_message("LeapFrog observation afsluttet")
+    
+
+    # =================
+    # TRACKING METODER
+    # =================
+    
+    def tracking_log_message(self, message):
+        """Tilføj besked til tracking log"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.tracking_log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.tracking_log_text.see(tk.END)
+        self.root.update()
+    
+    def test_pw4_connection(self):
+        """Test forbindelse til PlaneWave4"""
+        try:
+            url = self.pw4_url_entry.get().strip()
+            if not url:
+                self.pw4_status_label.config(text="Status: Ingen URL angivet", foreground='red')
+                return
+                
+            self.pw4_status_label.config(text="Status: Tester forbindelse...", foreground='orange')
+            self.root.update()
+            
+            # Prøv forskellige endpoints for at teste forbindelsen
+            test_endpoints = ["/status", "/", "/mount/follow_tle"]
+            
+            for endpoint in test_endpoints:
+                try:
+                    response = requests.get(f"{url}{endpoint}", timeout=5)
+                    if response.status_code in [200, 405]:  # 405 = Method Not Allowed (men server svarer)
+                        self.pw4_status_label.config(text="Status: Forbindelse OK ✓", foreground='green')
+                        self.tracking_log_message(f"PlaneWave4 forbindelse OK (testet {endpoint})")
+                        return
+                except:
+                    continue
+            
+            # Hvis ingen endpoints svarede positivt
+            self.pw4_status_label.config(text="Status: Ingen gyldige endpoints", foreground='red')
+            self.tracking_log_message("PlaneWave4: Ingen kendte endpoints svarede")
+                
+        except requests.exceptions.Timeout:
+            self.pw4_status_label.config(text="Status: Timeout", foreground='red')
+            self.tracking_log_message("PlaneWave4 forbindelse timeout")
+        except requests.exceptions.ConnectionError:
+            self.pw4_status_label.config(text="Status: Kan ikke forbinde", foreground='red')
+            self.tracking_log_message("Kan ikke forbinde til PlaneWave4")
+        except Exception as e:
+            self.pw4_status_label.config(text="Status: Fejl", foreground='red')
+            self.tracking_log_message(f"Fejl ved test af PlaneWave4: {str(e)}")
+    
+    def get_selected_satellite_for_tracking(self):
+        """Henter den valgte satellit fra satellitlisten til tracking"""
+        try:
+            selection = self.satellite_tree.selection()
+            if not selection:
+                messagebox.showwarning("Ingen valg", "Vælg venligst en satelitt fra 'Hent Satelitlister' fanen")
+                return
+            
+            item = selection[0]
+            values = self.satellite_tree.item(item, 'values')
+            
+            # Udtræk satellit information
+            self.selected_tracking_satellite = {
+                'SatName': values[0],
+                'NORAD': values[1],
+                'StartTime': values[2],
+                'EndTime': values[4],
+                'TLE1': self.get_full_tle_from_selection(item)[0],
+                'TLE2': self.get_full_tle_from_selection(item)[1]
+            }
+            
+            # Vis satellit info
+            info_text = f"Satellit: {self.selected_tracking_satellite['SatName']}\n"
+            info_text += f"NORAD ID: {self.selected_tracking_satellite['NORAD']}\n"
+            info_text += f"Observation: {self.selected_tracking_satellite['StartTime']} - {self.selected_tracking_satellite['EndTime']}"
+            
+            self.tracking_sat_info_text.delete(1.0, tk.END)
+            self.tracking_sat_info_text.insert(1.0, info_text)
+            
+            # Fyld manuel TLE felter ud
+            self.manual_sat_name_entry.delete(0, tk.END)
+            self.manual_sat_name_entry.insert(0, self.selected_tracking_satellite['SatName'])
+            
+            self.manual_tle1_entry.delete(0, tk.END)
+            self.manual_tle1_entry.insert(0, self.selected_tracking_satellite['TLE1'])
+            
+            self.manual_tle2_entry.delete(0, tk.END)
+            self.manual_tle2_entry.insert(0, self.selected_tracking_satellite['TLE2'])
+            
+            self.tracking_log_message(f"Valgt satellit til tracking: {self.selected_tracking_satellite['SatName']}")
+            
+        except Exception as e:
+            messagebox.showerror("Fejl", f"Kunne ikke hente satellit information: {str(e)}")
+            self.tracking_log_message(f"Fejl ved valg af satellit: {str(e)}")
+    
+    def use_manual_tle(self):
+        """Brug manuelt indtastet TLE data"""
+        try:
+            sat_name = self.manual_sat_name_entry.get().strip()
+            tle1 = self.manual_tle1_entry.get().strip()
+            tle2 = self.manual_tle2_entry.get().strip()
+            
+            if not sat_name or not tle1 or not tle2:
+                messagebox.showwarning("Manglende data", "Udfyld alle TLE felter")
+                return
+            
+            # Validering af TLE format
+            if not (tle1.startswith('1 ') and tle2.startswith('2 ')):
+                messagebox.showerror("Ugyldig TLE", "TLE linje 1 skal starte med '1 ' og linje 2 med '2 '")
+                return
+            
+            self.selected_tracking_satellite = {
+                'SatName': sat_name,
+                'NORAD': tle1[2:7].strip(),
+                'StartTime': datetime.now().strftime('%H:%M:%S'),
+                'EndTime': (datetime.now() + timedelta(hours=1)).strftime('%H:%M:%S'),
+                'TLE1': tle1,
+                'TLE2': tle2
+            }
+            
+            # Vis satellit info
+            info_text = f"Satellit: {self.selected_tracking_satellite['SatName']}\n"
+            info_text += f"NORAD ID: {self.selected_tracking_satellite['NORAD']}\n"
+            info_text += f"Manuel TLE data anvendt"
+            
+            self.tracking_sat_info_text.delete(1.0, tk.END)
+            self.tracking_sat_info_text.insert(1.0, info_text)
+            
+            self.tracking_log_message(f"Manuel TLE data anvendt for: {sat_name}")
+            
+        except Exception as e:
+            messagebox.showerror("Fejl", f"Kunne ikke anvende manuel TLE: {str(e)}")
+            self.tracking_log_message(f"Fejl ved manuel TLE: {str(e)}")
+    
+    def validate_tracking_parameters(self):
+        """Professionel validering af alle tracking parametre før observation"""
+        try:
+            # Validér exposure time
+            exposure_time = float(self.exposure_time_entry.get())
+            if exposure_time <= 0:
+                messagebox.showerror("Parameter Fejl", "Exposure time skal være positiv (>0)")
+                return False
+            if exposure_time > 3600:  # 1 time max for sikkerhed
+                result = messagebox.askyesno("Lang Eksponering", 
+                    f"Exposure time er {exposure_time}s (>{exposure_time/60:.1f} min). Fortsæt?")
+                if not result:
+                    return False
+        except ValueError:
+            messagebox.showerror("Parameter Fejl", "Ugyldig exposure time - skal være et tal")
+            return False
+            
+        try:
+            # Validér interval
+            interval = float(self.tracking_interval_entry.get())
+            if interval <= 0:
+                messagebox.showerror("Parameter Fejl", "Interval mellem billeder skal være positivt")
+                return False
+            if interval < exposure_time:
+                messagebox.showwarning("Parameter Advarsel", 
+                    f"Interval ({interval}s) er kortere end exposure time ({exposure_time}s)")
+        except ValueError:
+            messagebox.showerror("Parameter Fejl", "Ugyldig interval - skal være et tal")
+            return False
+            
+        try:
+            # Validér antal billeder
+            num_images = int(self.num_images_entry.get())
+            if num_images <= 0:
+                messagebox.showerror("Parameter Fejl", "Antal billeder skal være positivt")
+                return False
+            if num_images > 1000:
+                result = messagebox.askyesno("Mange Billeder", 
+                    f"Du har valgt {num_images} billeder. Dette vil tage lang tid. Fortsæt?")
+                if not result:
+                    return False
+        except ValueError:
+            messagebox.showerror("Parameter Fejl", "Ugyldig antal billeder - skal være et helt tal")
+            return False
+            
+        try:
+            # Validér binning parametre (fra kameraindstillinger)
+            x_binning = self.camera_binning_x.get()
+            y_binning = self.camera_binning_y.get()
+            
+            if not (1 <= x_binning <= 16):
+                messagebox.showerror("Parameter Fejl", "X-binning skal være mellem 1 og 16")
+                return False
+            if not (1 <= y_binning <= 16):
+                messagebox.showerror("Parameter Fejl", "Y-binning skal være mellem 1 og 16")
+                return False
+                
+            # Advar om asymmetrisk binning
+            if x_binning != y_binning:
+                result = messagebox.askyesno("Asymmetrisk Binning", 
+                    f"Du har valgt {x_binning}x{y_binning} binning. Asymmetrisk binning kan give forvrængede billeder. Fortsæt?")
+                if not result:
+                    return False
+                    
+        except ValueError:
+            messagebox.showerror("Parameter Fejl", "Ugyldig binning - skal være hele tal")
+            return False
+            
+        # Validér PWI4 URL
+        pw4_url = self.pw4_url_entry.get().strip()
+        if not pw4_url:
+            messagebox.showerror("Parameter Fejl", "PWI4 URL skal udfyldes")
+            return False
+        if not (pw4_url.startswith('http://') or pw4_url.startswith('https://')):
+            messagebox.showerror("Parameter Fejl", "PWI4 URL skal starte med http:// eller https://")
+            return False
+            
+        # Beregn total observationstid
+        try:
+            total_time = num_images * interval
+            total_minutes = total_time / 60
+            if total_minutes > 60:
+                result = messagebox.askyesno("Lang Observation", 
+                    f"Total observationstid: {total_minutes:.1f} minutter. Fortsæt?")
+                if not result:
+                    return False
+        except:
+            pass  # Variabler allerede valideret
+            
+        return True
+    
+    def start_tracking_observation(self):
+        """Start tracking observation"""
+        if not self.selected_tracking_satellite:
+            messagebox.showwarning("Ingen satellit", "Vælg først en satelitt eller indtast manuel TLE")
+            return
+        
+        if self.tracking_running:
+            messagebox.showwarning("Tracking kører", "En tracking observation kører allerede")
+            return
+            
+        # Tjek kamera tilgængelighed først
+        camera = self.get_camera_for_observation()
+        if camera is None:
+            messagebox.showerror("Kamera ikke tilgængelig", 
+                               "Moravian kamera ikke tilsluttet eller ikke tilgængeligt.\n\n"
+                               "Tilslut kameraet i kameraindstillinger først.\n"
+                               "Sørg for at Moravian SDK er installeret og kameraet er forbundet.")
+            return
+        
+        # Valider parametre med professionel standard
+        if not self.validate_tracking_parameters():
+            return
+            
+        # Valider parametre
+        try:
+            exposure_time = float(self.exposure_time_entry.get())
+            interval = float(self.tracking_interval_entry.get())
+            num_images = int(self.num_images_entry.get())
+            x_binning = self.camera_binning_x.get()
+            y_binning = self.camera_binning_y.get()
+            pw4_url = self.pw4_url_entry.get().strip()
+            
+            if exposure_time <= 0 or interval <= 0 or num_images <= 0:
+                messagebox.showerror("Ugyldige parametre", "Alle værdier skal være positive")
+                return
+            
+            if x_binning < 1 or y_binning < 1 or x_binning > 16 or y_binning > 16:
+                messagebox.showerror("Ugyldig binning", "Binning skal være mellem 1 og 16")
+                return
+                
+        except ValueError:
+            messagebox.showerror("Ugyldige parametre", "Kontroller at alle parametre er gyldige tal")
+            return
+        
+        # Skift knap tilstande
+        self.start_tracking_btn.config(state='disabled')
+        self.stop_tracking_btn.config(state='normal')
+        
+        # Start tracking i separat tråd
+        self.stop_tracking = False
+        self.tracking_running = True
+        threading.Thread(target=self.run_tracking_observation, daemon=True).start()
+    
+    def stop_tracking_observation(self):
+        """Stop tracking observation"""
+        self.stop_tracking = True
+        self.tracking_log_message("Stop signal sendt til tracking...")
+    
+    def optimized_camera_exposure_with_timing(self, camera, exposure_time, pw4_client, pw4_url, obstype='satellite'):
+        """Optimeret kamera eksponering med præcise tidsstempler og PWI4 status hentning."""
+        import time
+        from datetime import datetime, timedelta
+        
+        # Pre-beregn præcise tidspunkter baseret på computerur
+        planned_start_time = datetime.utcnow()
+        planned_mid_time = planned_start_time + timedelta(seconds=exposure_time / 2.0)
+        
+        self.tracking_log_message(f"Planlagt {obstype}: {planned_start_time.strftime('%H:%M:%S.%f')[:-3]} -> {planned_mid_time.strftime('%H:%M:%S.%f')[:-3]}")
+        
+        # Start eksponering så tæt på planlagt tid som muligt
+        actual_start_time = datetime.utcnow()
+        camera.start_exposure(exposure_time, use_shutter=True)
+        
+        # Beregn justeret midtertidspunkt baseret på faktisk start
+        start_delay = (actual_start_time - planned_start_time).total_seconds()
+        adjusted_mid_time = planned_mid_time + timedelta(seconds=start_delay)
+        
+        if abs(start_delay * 1000) > 5:  # Log kun hvis delay > 5ms
+            self.tracking_log_message(f"Kamera start delay: {start_delay*1000:.1f}ms")
+        
+        # Præcis venting til midtertidspunkt
+        pw4_status = None
+        timing_accuracy = 0.0
+        
+        while datetime.utcnow() < adjusted_mid_time:
+            if self.stop_tracking:  # Check for user stop
+                try:
+                    camera.abort_exposure()
+                    self.tracking_log_message(f"{obstype.title()} eksponering afbrudt af bruger")
+                except:
+                    pass
+                return None
+                
+            # Vent i små intervaller for høj præcision
+            remaining_seconds = (adjusted_mid_time - datetime.utcnow()).total_seconds()
+            if remaining_seconds > 0.01:  # Hvis mere end 10ms tilbage
+                time.sleep(min(0.001, remaining_seconds / 2))  # Sleep max 1ms
+            else:
+                break
+        
+        # Hent PWI4 status så præcist som muligt ved midtertidspunkt
+        actual_mid_time = datetime.utcnow()
+        timing_accuracy = abs((actual_mid_time - adjusted_mid_time).total_seconds() * 1000)  # ms
+        
+        try:
+            if (obstype == 'Tracking' or obstype == 'LeapFrog') and pw4_client:
+                # Brug PWI4 klient for Tracking og LeapFrog billeder
+                status = pw4_client.get_status()
+                if status:
+                    pw4_status = {
+                        'mount': {
+                            'ra_apparent_hours': status['ra_apparent_hours'],
+                            'dec_apparent_degs': status['dec_apparent_degs'],
+                            'ra_j2000_hours': status['ra_j2000_hours'],
+                            'dec_j2000_degs': status['dec_j2000_degs'],
+                            'ra_apparent_degs': status['ra_apparent_hours'] * 15.0,
+                            'ra_j2000_degs': status['ra_j2000_hours'] * 15.0,
+                            'is_slewing': status['slewing'],
+                            'is_tracking': status['tracking'],
+                            'altitude_degs': status['altitude_degs'],
+                            'azimuth_degs': status['azimuth_degs'],
+                            'julian_date': status['julian_date'],
+                            'distance_to_sun_degs': status['distance_to_sun_degs'],
+                            'field_angle_degs': status['field_angle_degs']
+                        },
+                        'site': {
+                            'latitude_degs': status['latitude_degs'],
+                            'longitude_degs': status['longitude_degs'],
+                            'height_meters': status['height_meters']
+                        },
+                        'pwi4': {
+                            'version': 'PWI4 HTTP API'
+                        }
+                    }
+            elif obstype == 'starfield':
+                # Brug HTTP direkte for stjernehimmel billeder
+                import requests
+                status_response = requests.get(f"{pw4_url}/status", timeout=5)
+                if status_response.status_code == 200:
+                    lines = status_response.text.strip().splitlines()
+                    pw4_data = {}
+                    for line in lines:
+                        if "=" in line:
+                            key, value = line.split("=", 1)
+                            pw4_data[key.strip()] = value.strip()
+                    
+                    pw4_status = {
+                        'mount': {
+                            'ra_apparent_hours': float(pw4_data.get('mount.ra_apparent_hours', 0)),
+                            'dec_apparent_degs': float(pw4_data.get('mount.dec_apparent_degs', 0)),
+                            'ra_j2000_hours': float(pw4_data.get('mount.ra_j2000_hours', 0)),
+                            'dec_j2000_degs': float(pw4_data.get('mount.dec_j2000_degs', 0)),
+                            'ra_apparent_degs': float(pw4_data.get('mount.ra_apparent_degs', 0)),
+                            'ra_j2000_degs': float(pw4_data.get('mount.ra_j2000_degs', 0)),
+                            'is_slewing': pw4_data.get('mount.is_slewing', 'false').lower() == 'true',
+                            'is_tracking': pw4_data.get('mount.is_tracking', 'false').lower() == 'true',
+                            'altitude_degs': float(pw4_data.get('mount.altitude_degs', 0)),
+                            'azimuth_degs': float(pw4_data.get('mount.azimuth_degs', 0)),
+                            'julian_date': float(pw4_data.get('mount.julian_date', 0)),
+                            'distance_to_sun_degs': float(pw4_data.get('mount.distance_to_sun_degs', 0)),
+                            'field_angle_degs': float(pw4_data.get('rotator.field_angle_degs', 0))
+                        },
+                        'site': {
+                            'latitude_degs': float(pw4_data.get('site.latitude_degs', 0)),
+                            'longitude_degs': float(pw4_data.get('site.longitude_degs', 0)),
+                            'height_meters': float(pw4_data.get('site.height_meters', 0))
+                        },
+                        'pwi4': {
+                            'version': pw4_data.get('pwi4.version', 'Unknown')
+                        }
+                    }
+            
+            self.tracking_log_message(f"PWI4 status hentet: {actual_mid_time.strftime('%H:%M:%S.%f')[:-3]} (nøjagtighed: {timing_accuracy:.1f}ms)")
+            
+        except Exception as pw4_error:
+            self.tracking_log_message(f"PWI4 status fejl ({obstype}): {str(pw4_error)}")
+        
+        # Vent på eksponering færdig
+        camera.wait_for_image(timeout=exposure_time + 2) # Venter maks 2 sekunder ekstra
+        
+        # Hent billede og noter præcis sluttid
+        if self.stop_tracking:
+            return None
+            
+        if camera.image_ready():
+            # Noter tid FØR billedhentning (dette er nærmere det faktiske eksposeringsslut)
+            exposure_end_estimate = datetime.utcnow()
+            img_data = camera.read_image()
+            
+            self.tracking_log_message(f"{obstype.title()} billede hentet: {img_data.shape} (slut: {exposure_end_estimate.strftime('%H:%M:%S.%f')[:-3]})")
+            
+            return {
+                'image_data': img_data,
+                'exposure_start_time': actual_start_time,
+                'exposure_mid_time': actual_mid_time,
+                'exposure_end_time': exposure_end_estimate,
+                'pw4_status': pw4_status,
+                'timing_accuracy': timing_accuracy,
+                'obstype': obstype
+            }
+        else:
+            raise Exception(f"{obstype.title()} kamera billede ikke klar efter timeout")
+    
+    def run_tracking_observation(self):
+        """Kør tracking observation med PlaneWave4"""
+        try:
+            self.tracking_log_message("Starter tracking observation...")
+            
+            # Hent parametre (binning fra kameraindstillinger)
+            exposure_time = float(self.exposure_time_entry.get())
+            interval = float(self.tracking_interval_entry.get())
+            num_images = int(self.num_images_entry.get())
+            x_binning = self.camera_binning_x.get()
+            y_binning = self.camera_binning_y.get()
+            pw4_url = self.pw4_url_entry.get().strip()
+            
+            sat_name = self.selected_tracking_satellite['SatName']
+            tle1 = self.selected_tracking_satellite['TLE1']
+            tle2 = self.selected_tracking_satellite['TLE2']
+            
+            self.tracking_log_message(f"Satellit: {sat_name}")
+            self.tracking_log_message(f"Exposure time: {exposure_time}s, Interval: {interval}s, Antal billeder: {num_images}")
+            self.tracking_log_message(f"Binning: {x_binning}x{y_binning}")
+            
+            # Initialiser Moravian kamera
+            camera = self.get_camera_for_observation()
+            if camera is None:
+                self.tracking_log_message("FEJL: Moravian kamera ikke tilsluttet")
+                self.tracking_log_message("Tilslut kameraet i kameraindstillinger først")
+                raise Exception("Moravian kamera ikke tilsluttet eller ikke tilgængeligt")
+            
+            # Sæt binning på kamera
+            camera.set_binning(x_binning, y_binning)
+            
+            # Kamera konfiguration for Moravian kameraer
+            info = camera.get_camera_info()
+            camera_desc = info.get('description', 'Moravian Camera')
+            ccd_width = info.get('width', 0)
+            ccd_height = info.get('height', 0)
+            
+            self.tracking_log_message(f"Konfigurerer kamera: {camera_desc}")
+            self.tracking_log_message(f"CCD størrelse: {ccd_width} x {ccd_height} pixels")
+            self.tracking_log_message(f"Binning sat til: {x_binning}x{y_binning}")
+            
+            # Beregn korrekt billedstørrelse baseret på binning
+            image_width = ccd_width // x_binning
+            image_height = ccd_height // y_binning
+            
+            self.tracking_log_message(f"Beregnet billedstørrelse: {image_width}x{image_height} pixels")
+            
+            # Verificer binning
+            max_binning_x = info.get('max_binning_x', 8)
+            max_binning_y = info.get('max_binning_y', 8)
+            
+            if x_binning > max_binning_x or y_binning > max_binning_y:
+                raise Exception(f"Binning {x_binning}x{y_binning} overstiger kamera max: {max_binning_x}x{max_binning_y}")
+            
+            self.tracking_log_message(f"Kamera konfiguration bekræftet:")
+            self.tracking_log_message(f"  Binning: {camera.bin_x}x{camera.bin_y}")
+            self.tracking_log_message(f"  Billedstørrelse: {image_width}x{image_height} pixels")
+            
+            # Temperatur info
+            current_temp = info.get('temperature', None)
+            if current_temp is not None:
+                self.tracking_log_message(f"  Kamera temperatur: {current_temp:.1f}°C")
+            
+            # Start PlaneWave4 tracking
+            self.tracking_log_message("Starter PWI4 satellit tracking...")
+            
+            try:
+                # Opret PWI4 klient
+                pw4_host = self.pw4_url.replace("http://", "").split(":")[0]
+                pw4_port = int(self.pw4_url.split(":")[-1]) if ":" in self.pw4_url else 8220
+                
+                pwi4 = PWI4Telescope(host=pw4_host, port=pw4_port)
+                
+                if not pwi4.test_connection():
+                    raise Exception(f"Kan ikke forbinde til PWI4 på {self.pw4_url}")
+                
+                pwi4.connect()
+                self.tracking_log_message("PWI4 forbinder etableret")
+                
+                # Start satellit tracking
+                pwi4.track_satellite_tle(sat_name, tle1, tle2)
+                self.tracking_log_message("PWI4 satellit tracking startet")
+
+                # Vent på slew færdig
+                while pwi4.is_slewing() and not self.stop_tracking:
+                    time.sleep(0.1)
+                
+            except Exception as e:
+                self.tracking_log_message(f"PWI4 fejl: {str(e)}")
+                return
+            
+            # Tag billeder med specified intervaller
+            for i in range(num_images):
+                if self.stop_tracking:
+                    self.tracking_log_message("Tracking stoppet af bruger")
+                    break
+                
+                # Opret outputmappe ved første billede
+                if i == 0:
+                    # Generer mappenavn: Tracking_SatellitNavn_NoradId_Måned_Dag
+                    session_date = datetime.now().strftime('%m_%d')
+                    safe_sat_name = "".join(c for c in sat_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                    safe_sat_name = safe_sat_name.replace(' ', '_')
+                    norad_id = self.selected_tracking_satellite['NORAD']
+                    
+                    output_dir = f"Tracking_{safe_sat_name}_{norad_id}_{session_date}"
+                    
+                    try:
+                        os.makedirs(output_dir, exist_ok=True)
+                        self.tracking_log_message(f"Oprettet outputmappe: {output_dir}")
+                    except Exception as dir_error:
+                        self.tracking_log_message(f"Kunne ikke oprette mappe {output_dir}: {str(dir_error)}")
+                        output_dir = "."  # Brug nuværende mappe som fallback
+                
+                self.tracking_log_message(f"Tager billede {i+1}/{num_images}")
+                
+                # Tag stjernehimmel referencebillede efter første satellitbillede
+                if i == 1:  # Efter det første billede (index 0)
+                    try:
+                        self.tracking_log_message("Afbryder satellit tracking for at tage stjernehimmel referencebillede...")
+                        
+                        # Stop PlaneWave4 satellit tracking
+                        stop_response = requests.get(f"{pw4_url}/mount/stop", timeout=5)
+                        if stop_response.status_code == 200:
+                            self.tracking_log_message("PlaneWave4 satellit tracking stoppet")
+                        else:
+                            self.tracking_log_message(f"Kunne ikke stoppe satellit tracking: HTTP {stop_response.status_code}")
+                        
+                        # Start sidereal tracking (stjernehimmel)
+                        sidereal_response = requests.get(f"{pw4_url}/mount/tracking_on", timeout=5)
+                        if sidereal_response.status_code == 200:
+                            self.tracking_log_message("Sidereal tracking (stjernehimmel) startet")
+                        else:
+                            self.tracking_log_message(f"Kunne ikke starte sidereal tracking: HTTP {sidereal_response.status_code}")
+                        
+                        # Vent lidt for at sikre tracking er stabiliseret
+                        time.sleep(2)
+                        
+                        # Tag stjernehimmel billede med OPTIMERET timing
+                        self.tracking_log_message("Tager stjernehimmel referencebillede (optimeret timing)...")
+                        
+                        # *** OPTIMERET STJERNEHIMMEL EKSPONERING ***
+                        star_result = self.optimized_camera_exposure_with_timing(
+                            camera=camera, 
+                            exposure_time=exposure_time, 
+                            pw4_client=None,  # Bruges ikke for stjernehimmel
+                            pw4_url=pw4_url,
+                            obstype='starfield'
+                        )
+                        
+                        if star_result is None:  # Afbrudt af bruger
+                            continue
+                        
+                        # Udpak resultater
+                        star_img_data = star_result['image_data']
+                        star_exposure_start_time = star_result['exposure_start_time']
+                        star_exposure_end_time = star_result['exposure_end_time']
+                        star_pw4_status = star_result['pw4_status']
+                        
+                        self.tracking_log_message(f"Stjernehimmel timing nøjagtighed: {star_result['timing_accuracy']:.1f}ms")
+                        
+
+                        
+                        # Generer filnavn for stjernehimmel billede
+                        star_filename = f"Starfield_ref_{safe_sat_name}_{norad_id}_001.fits"
+                        star_filepath = os.path.join(output_dir, star_filename)
+                        
+                        # Hent filter information
+                        filter_name = self.get_current_filter_name()
+                        
+                        # Opret FITS header for stjernehimmel billede
+                        star_hdr = self.create_standard_fits_header(
+                            obstype='stjernehimmel',
+                            sat_name=sat_name,  # Beholder satellit navn for reference
+                            exposure_start_time=star_exposure_start_time,
+                            exposure_end_time=star_exposure_end_time,
+                            exposure_time=exposure_time,
+                            tle1=tle1,
+                            tle2=tle2,
+                            norad_id=self.selected_tracking_satellite['NORAD'],
+                            camera=camera,
+                            pw4_status=star_pw4_status,
+                            image_width=star_img_data.shape[1],
+                            image_height=star_img_data.shape[0],
+                            filter_name=filter_name
+                        )
+                        
+                        # Gem stjernehimmel FITS fil
+                        star_img_data_uint16 = star_img_data.astype(np.uint16)
+                        hdu = fits.PrimaryHDU(data=star_img_data_uint16, header=star_hdr)
+                        hdu.writeto(star_filepath, overwrite=True)
+                        
+                        self.tracking_log_message(f"Stjernehimmel referencebillede gemt: {star_filename}")
+                        
+                        # Genstart satellit tracking
+                        self.tracking_log_message("Genstarter satellit tracking...")
+                        restart_response = requests.get(
+                            f"{pw4_url}/mount/follow_tle",
+                            params={
+                                "line1": sat_name,
+                                "line2": tle1,
+                                "line3": tle2
+                            },
+                            timeout=10
+                        )
+                        
+                        if restart_response.status_code == 200:
+                            self.tracking_log_message("Satellit tracking genstartet succesfuldt")
+                        else:
+                            self.tracking_log_message(f"Fejl ved genstart af satellit tracking: HTTP {restart_response.status_code}")
+                        
+                        # Vent lidt for at sikre tracking er stabiliseret igen
+                        time.sleep(2)
+                        
+                    except Exception as star_error:
+                        self.tracking_log_message(f"Fejl ved stjernehimmel billede: {str(star_error)}")
+                        # Fortsæt med normal observation selvom stjernehimmel fejlede
+                
+                try:
+                    # *** OPTIMERET SATELLIT EKSPONERING ***
+                    satellite_result = self.optimized_camera_exposure_with_timing(
+                        camera=camera, 
+                        exposure_time=exposure_time, 
+                        pw4_client=pwi4,
+                        pw4_url=pw4_url,
+                        obstype='Tracking'
+                    )
+                    
+                    if satellite_result is None:  # Afbrudt af bruger
+                        break
+                    
+                    # Udpak resultater
+                    img_data = satellite_result['image_data']
+                    exposure_start_time = satellite_result['exposure_start_time'] 
+                    exposure_mid_time = satellite_result['exposure_mid_time']
+                    exposure_end_time = satellite_result['exposure_end_time']
+                    pw4_status = satellite_result['pw4_status']
+                    
+                    self.tracking_log_message(f"Satellit timing nøjagtighed: {satellite_result['timing_accuracy']:.1f}ms")
+                    
+                    if self.stop_observation:
+                        break
+
+                    # Generer filnavn med nyt format
+                    filename = f"Tracking_{safe_sat_name}_{norad_id}_{i+1:03d}.fits"
+                    
+                    # Komplet sti med mappe
+                    filepath = os.path.join(output_dir, filename)
+                    
+                    # Hent filter information
+                    filter_name = self.get_current_filter_name()
+                    
+                    # Opret FITS header med præcis timing for Tracking
+                    hdr = self.create_standard_fits_header(
+                        obstype='Tracking',
+                        sat_name=sat_name,
+                        exposure_start_time=exposure_start_time,
+                        exposure_end_time=exposure_end_time,
+                        exposure_time=exposure_time,
+                        tle1=tle1,
+                        tle2=tle2,
+                        norad_id=self.selected_tracking_satellite['NORAD'],
+                        camera=camera,
+                        pw4_status=pw4_status,
+                        image_width=img_data.shape[1],
+                        image_height=img_data.shape[0],
+                        filter_name=filter_name,
+                        mid_exposure_time=exposure_mid_time
+                    )
+                    
+                    # Tilføj tracking specifikke felter
+                    hdr["COMMENT"] = f"Satellite tracking image {i+1}/{num_images}"
+                    
+                    # Gem FITS fil med komplet header
+                    img_data_uint16 = img_data.astype(np.uint16)
+                    hdu = fits.PrimaryHDU(data=img_data_uint16, header=hdr)
+                    hdu.writeto(filepath, overwrite=True)
+                    
+                    self.tracking_log_message(f"Billede gemt: {filename}")
+                    
+                except Exception as img_error:
+                    self.tracking_log_message(f"Fejl ved tag af billede {i+1}: {str(img_error)}")
+                
+                if self.stop_tracking:
+                    break
+                
+                # Vent til næste billede
+                if i < num_images - 1:  # Vent ikke efter sidste billede
+                    self.tracking_log_message(f"Venter {interval}s til næste billede...")
+                    
+                    # Vent i små intervaller så vi kan stoppe hurtigt
+                    wait_time = 0
+                    while wait_time < interval and not self.stop_tracking:
+                        time.sleep(0.1)
+                        wait_time += 0.1
+            
+            if not self.stop_tracking:
+                self.tracking_log_message("Tracking observation fuldført!")
+            
+            # Stop PWI4 tracking
+            try:
+                pwi4.stop_tracking()
+                self.tracking_log_message("PWI4 tracking stoppet")
+            except Exception as e:
+                self.tracking_log_message(f"Fejl ved stop af PWI4: {str(e)}")
+            
+        except Exception as e:
+            self.tracking_log_message(f"Fejl under tracking: {str(e)}")
+        finally:
+            self.tracking_running = False
+            self.start_tracking_btn.config(state='normal')
+            self.stop_tracking_btn.config(state='disabled')
+            pwi4.park()
+            self.tracking_log_message("Tracking session afsluttet")
+
+    # =================
+    # BILLEDE ANALYSE METODER
+    # =================
+    
+    def analysis_log_message(self, message):
+        """Tilføj besked til analyse log"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.analysis_log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.analysis_log_text.see(tk.END)
+        self.root.update()
+    
+    def setup_plot_display(self, parent_frame):
+        """Opsæt plot visning område med scrollbar"""
+        # Canvas med scrollbar
+        canvas_frame = ttk.Frame(parent_frame)
+        canvas_frame.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.plot_canvas = Canvas(canvas_frame, background='white')
+        scrollbar = ttk.Scrollbar(canvas_frame, orient='vertical', command=self.plot_canvas.yview)
+        self.plot_scrollable_frame = ttk.Frame(self.plot_canvas)
+        
+        self.plot_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.plot_canvas.configure(scrollregion=self.plot_canvas.bbox("all"))
+        )
+        
+        self.plot_canvas.create_window((0, 0), window=self.plot_scrollable_frame, anchor="nw")
+        self.plot_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        self.plot_canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Placeholder label
+        self.plot_placeholder = ttk.Label(self.plot_scrollable_frame, 
+                                         text="Plots vil blive vist her efter analyse", 
+                                         font=('Arial', 10), foreground='gray')
+        self.plot_placeholder.pack(expand=True, pady=50)
+    
+    def select_analysis_directory(self):
+        """Vælg mappe med billeder til analyse"""
+        directory = filedialog.askdirectory(
+            title="Vælg mappe med FITS billeder",
+            initialdir=os.getcwd()
+        )
+        if directory:
+            self.analysis_dir_entry.delete(0, tk.END)
+            self.analysis_dir_entry.insert(0, directory)
+            self.analysis_directory = directory
+    
+    def select_astap_path(self):
+        """Vælg ASTAP executable"""
+        filepath = filedialog.askopenfilename(
+            title="Vælg ASTAP executable",
+            filetypes=[("Executable files", "*.exe"), ("All files", "*.*")],
+            initialdir=r"C:\Program Files\astap"
+        )
+        if filepath:
+            self.astap_path_entry.delete(0, tk.END)
+            self.astap_path_entry.insert(0, filepath)
+    
+    def start_image_analysis(self):
+        """Start billede analyse i separat tråd"""
+        if self.image_analysis_running:
+            messagebox.showwarning("Analyse kører", "En analyse kører allerede")
+            return
+        
+        # Valider input
+        directory = self.analysis_dir_entry.get().strip()
+        astap_path = self.astap_path_entry.get().strip()
+        
+        if not directory or not os.path.exists(directory):
+            messagebox.showerror("Fejl", "Vælg en gyldig mappe med billeder")
+            return
+        
+        if not astap_path or not os.path.exists(astap_path):
+            messagebox.showerror("Fejl", "Vælg en gyldig ASTAP executable")
+            return
+        
+        try:
+            pixelscale = float(self.pixelscale_entry.get())
+            if pixelscale <= 0:
+                raise ValueError("Pixelscale skal være positiv")
+        except ValueError:
+            messagebox.showerror("Fejl", "Indtast en gyldig pixelscale (grader/pixel)")
+            return
+        
+        # Validér tracking pixelsum radius
+        try:
+            radius = self.tracking_pixelsum_radius.get()
+            if radius < 1 or radius > 1000:
+                raise ValueError("Radius skal være mellem 1 og 1000 pixels")
+        except ValueError:
+            messagebox.showerror("Fejl", "Indtast en gyldig radius for pixelsum (1-1000 pixels)")
+            return
+        
+        # Tjek for FITS filer
+        fits_files = [f for f in os.listdir(directory) if f.lower().endswith('.fits')]
+        if not fits_files:
+            messagebox.showerror("Fejl", "Ingen FITS filer fundet i mappen")
+            return
+        
+        # Start analyse
+        self.start_analysis_btn.config(state='disabled')
+        self.stop_analysis_btn.config(state='normal')
+        self.stop_image_analysis = False
+        
+        threading.Thread(target=self.run_image_analysis, daemon=True).start()
+    
+    def stop_image_analysis(self):
+        """Stop billede analyse"""
+        self.stop_image_analysis = True
+        self.analysis_log_message("Stop signal sendt...")
+    
+    def run_image_analysis(self):
+        """Kør billede analyse"""
+        try:
+            self.image_analysis_running = True
+            self.analysis_log_message("Starter billede analyse...")
+            
+            directory = self.analysis_dir_entry.get().strip()
+            astap_path = self.astap_path_entry.get().strip()
+            pixelscale = float(self.pixelscale_entry.get())
+            save_plots = self.save_plots_var.get()
+            
+            # Find FITS filer
+            fits_files = sorted([f for f in os.listdir(directory) if f.lower().endswith('.fits')])
+            self.analysis_log_message(f"Fundet {len(fits_files)} FITS filer")
+            
+            # Analyser første fil for at bestemme observation type
+            first_file = os.path.join(directory, fits_files[0])
+            with fits.open(first_file) as hdul:
+                header = hdul[0].header
+            
+            obstype = header.get('OBSTYPE', 'Unknown')
+            sat_name = header.get('OBJECT', 'Unknown')
+            norad_id = header.get('NORAD_ID', 'Unknown')
+            
+            self.analysis_log_message(f"Observation type: {obstype}")
+            self.analysis_log_message(f"Satellit: {sat_name} (NORAD: {norad_id})")
+            
+            # Opret output CSV navn
+            output_filename = f"data_{sat_name}_{norad_id}.csv"
+            output_path = os.path.join(directory, output_filename)
+            
+            if obstype == 'LeapFrog':
+                result_df = self.analyze_leapfrog_images(directory, fits_files, astap_path, pixelscale, save_plots)
+            elif obstype == 'Tracking' or obstype == 'stjernehimmel':
+                result_df = self.analyze_tracking_images(directory, fits_files, astap_path, pixelscale, save_plots)
+            else:
+                raise ValueError(f"Ukendt observation type: {obstype}")
+            
+            # Gem resultater
+            result_df.to_csv(output_path, index=False)
+            self.analysis_log_message(f"Resultater gemt i: {output_filename}")
+            
+            if not self.stop_image_analysis:
+                self.analysis_log_message("Billede analyse fuldført!")
+                
+                # Vis plots efter analysen hvis ønsket
+                if save_plots:
+                    self.root.after(100, lambda: self.display_plots_in_gui(directory))
+            
+        except Exception as e:
+            self.analysis_log_message(f"Fejl under analyse: {str(e)}")
+            messagebox.showerror("Fejl", f"Billede analyse fejlede: {str(e)}")
+        finally:
+            self.image_analysis_running = False
+            self.start_analysis_btn.config(state='normal')
+            self.stop_analysis_btn.config(state='disabled')
+            self.analysis_progress_var.set(0)
+
+    def run_astap_on_directory(self, directory, astap_exe=r"C:\Program Files\astap\astap.exe"):
+        """Kør ASTAP på alle FITS filer i en mappe og returner resultater som DataFrame"""
+        results = []
+
+        # find alle fits filer
+        for filename in os.listdir(directory):
+            if filename.lower().endswith(".fits"):
+                filepath = os.path.join(directory, filename)
+                wcsfile = os.path.join(directory, filename.replace(".fits", ".wcs"))
+
+                # kør astap
+                result = subprocess.run(
+                    [astap_exe, "-f", filepath, "-wcs", wcsfile],
+                    capture_output=True, text=True
+                )
+
+                if result.returncode != 0:
+                    self.analysis_log_message(f"ASTAP fejlede for {filename}: {result.stderr}")
+                    continue
+                else:
+                    self.analysis_log_message(f"ASTAP gennemført for {filename}")
+
+                # læs header fra wcs-filen
+                if os.path.exists(wcsfile):
+                    with fits.open(wcsfile) as hdul:
+                        header = hdul[0].header
+                        
+
+                    # konverter header til dict
+                    header_dict = {k: header[k] for k in header.keys() if k != ''}
+
+                    # tilføj filnavn
+                    header_dict["filename"] = filename
+
+                    results.append(header_dict)
+                    os.remove(wcsfile)
+
+        # lav dataframe af alle headere
+        df = pd.DataFrame(results)
+
+        # Slet alle .ini-filer i output-mappen (ASTAP kan have lavet dem)
+        for f in os.listdir(directory):
+            if f.lower().endswith('.ini'):
+                try:
+                    os.remove(os.path.join(directory, f))
+                except Exception:
+                    pass
+
+        return df
+    
+    def analyze_leapfrog_images(self, directory, fits_files, astap_path, pixelscale, save_plots):
+        """Analyser LeapFrog billeder"""
+        self.analysis_log_message("Starter LeapFrog analyse...")
+        
+        if not SKIMAGE_AVAILABLE:
+            raise ImportError("Manglende biblioteker: skimage, cv2, scipy")
+        
+        from Func_fagprojekt import pixel_to_radec, compute_cd
+        
+        results = []
+        total_files = len(fits_files)
+        
+        # Kør ASTAP på alle billeder først
+        self.analysis_log_message("Kører ASTAP plate solving på alle billeder...")
+        try:
+            df_astap = self.run_astap_on_directory(directory, astap_path)
+            self.analysis_log_message(f"ASTAP gennemført på {len(df_astap)} billeder")
+        except Exception as e:
+            self.analysis_log_message(f"ADVARSEL: ASTAP fejlede: {str(e)}")
+            df_astap = None
+        
+        for i, filename in enumerate(fits_files):
+            if self.stop_image_analysis:
+                break
+            
+            self.analysis_log_message(f"Behandler LeapFrog fil {i+1}/{total_files}: {filename}")
+            self.analysis_progress_var.set((i / total_files) * 100)
+            
+            filepath = os.path.join(directory, filename)
+            
+            try:
+                # Læs FITS fil og header
+                with fits.open(filepath) as hdul:
+                    image_data = hdul[0].data.astype(np.float32)
+                    header = hdul[0].header
+                
+                # Udtræk alle headers fra FITS-filen med deres originale navne
+                file_data = dict(header)
+                # Tilføj filnavn (fra FITS er det ikke med)
+                file_data['filename'] = filename
+                
+                # Beregn observatørens ECI position fra lat/lon/ele og tidspunkt
+                try:
+                    from skyfield.api import load, wgs84
+                    from astropy.time import Time
+                    
+                    ts = load.timescale()
+                    obs_time_str = file_data.get('DATE-OBS', '')
+                    
+                    # Parse tidspunkt
+                    if 'T' in obs_time_str:
+                        obs_dt = datetime.strptime(obs_time_str, '%Y-%m-%dT%H:%M:%S.%f')
+                    else:
+                        obs_dt = datetime.strptime(obs_time_str, '%Y-%m-%d %H:%M:%S.%f')
+                    
+                    t = ts.utc(obs_dt.year, obs_dt.month, obs_dt.day, 
+                              obs_dt.hour, obs_dt.minute, obs_dt.second + obs_dt.microsecond/1e6)
+                    
+                    # Beregn ECI position
+                    lat = file_data.get('LAT-OBS', 0)
+                    lon = file_data.get('LONG-OBS', 0)
+                    ele = file_data.get('ELEV-OBS', 0)
+                    
+                    earth_location = wgs84.latlon(lat, lon, ele)
+                    eci_pos = earth_location.at(t).position.km
+                    
+                    file_data['X_obs'] = eci_pos[0]
+                    file_data['Y_obs'] = eci_pos[1]
+                    file_data['Z_obs'] = eci_pos[2]
+                    
+                except Exception as e:
+                    self.analysis_log_message(f"  Advarsel: Kunne ikke beregne ECI position: {str(e)}")
+                    file_data['X_obs'] = np.nan
+                    file_data['Y_obs'] = np.nan
+                    file_data['Z_obs'] = np.nan
+                
+                # Find satellitlinje med billedbehandling
+                sat_coords = self.find_satellite_line_leapfrog(image_data, header, save_plots, filepath, i)
+                file_data.update(sat_coords)
+                
+                # Opdater observationstid hvis vi har en korrigeret tid
+                if sat_coords.get('corrected_obs_time'):
+                    diff = (pd.to_datetime(sat_coords['corrected_obs_time']) - pd.to_datetime(file_data['DATE-OBS'])).total_seconds()
+                    self.analysis_log_message(f"ændrede DATE-OBS med {diff} s")
+                    file_data['DATE-OBS'] = sat_coords['corrected_obs_time']
+                
+                # Tilføj ASTAP WCS data hvis tilgængeligt
+                if df_astap is not None and filename in df_astap['filename'].values:
+                    astap_row = df_astap[df_astap['filename'] == filename].iloc[0]
+                    file_data['CRPIX1'] = astap_row.get('CRPIX1', np.nan)
+                    file_data['CRPIX2'] = astap_row.get('CRPIX2', np.nan)
+                    file_data['CRVAL1'] = astap_row.get('CRVAL1', np.nan)
+                    file_data['CRVAL2'] = astap_row.get('CRVAL2', np.nan)
+                    file_data['CD1_1'] = astap_row.get('CD1_1', np.nan)
+                    file_data['CD1_2'] = astap_row.get('CD1_2', np.nan)
+                    file_data['CD2_1'] = astap_row.get('CD2_1', np.nan)
+                    file_data['CD2_2'] = astap_row.get('CD2_2', np.nan)
+                    file_data['CROTA2_ASTAP'] = astap_row.get('CROTA2', np.nan)
+                    
+                    # Konverter pixel koordinater til RA/DEC hvis vi har både WCS og satellit position
+                    if not np.isnan(file_data.get('x_sat', np.nan)) and not np.isnan(file_data['CRVAL1']):
+                        try:
+                            x_sat = file_data['x_sat']
+                            y_sat = file_data['y_sat']
+                            ra_sat, dec_sat = pixel_to_radec(x_sat, y_sat, astap_row)
+                            file_data['Sat_RA_Behandlet'] = ra_sat
+                            file_data['Sat_DEC_Behandlet'] = dec_sat
+                            self.analysis_log_message(f"Satellit RA/DEC: {ra_sat:.6f}°, {dec_sat:.6f}°\n =============================")
+
+                            
+                            # Beregn selvberegnet CD matrix til sammenligning
+                            cdelt1 = astap_row.get('CDELT1', np.nan)
+                            cdelt2 = astap_row.get('CDELT2', np.nan)
+                            crota2 = astap_row.get('CROTA2', 0)
+                            dec_tel = file_data.get('DEC_TEL', 0)
+                            
+                            if not np.isnan(cdelt1) and not np.isnan(cdelt2):
+                                cd11_python, cd12_python, cd21_python, cd22_python = compute_cd(
+                                    cdelt1, cdelt2, crota2, dec_tel, ra_units_on_sky=True
+                                )
+                                file_data['CD1_1_python'] = cd11_python
+                                file_data['CD1_2_python'] = cd12_python
+                                file_data['CD2_1_python'] = cd21_python
+                                file_data['CD2_2_python'] = cd22_python
+                        except Exception as e:
+                            self.analysis_log_message(f"  Fejl ved RA/DEC konvertering: {str(e)}")
+                
+                results.append(file_data)
+                
+            except Exception as e:
+                self.analysis_log_message(f"Fejl i fil {filename}: {str(e)}")
+                # Tilføj tom række for at bevare rækkefølge
+                error_data = {'filename': filename, 'error': str(e)}
+                results.append(error_data)
+        
+        self.analysis_progress_var.set(100)
+        return pd.DataFrame(results)
+    
+    def analyze_tracking_images(self, directory, fits_files, astap_path, pixelscale, save_plots):
+        """Analyser Tracking billeder"""
+        self.analysis_log_message("Starter Tracking analyse...")
+        
+        if not SKIMAGE_AVAILABLE:
+            raise ImportError("Manglende biblioteker: skimage, cv2, scipy")
+        
+        from Func_fagprojekt import pixel_to_radec, compute_cd
+        
+        results = []
+        total_files = len(fits_files)
+        
+        # Find stjernehimmel reference billede
+        starfield_ref = None
+        for filename in fits_files:
+            if 'starfield_ref' in filename.lower():
+                starfield_ref = filename
+                break
+        
+        if starfield_ref:
+            self.analysis_log_message(f"Fundet stjernehimmel reference: {starfield_ref}")
+            # Analyser reference billede med ASTAP
+            ref_offset = self.analyze_starfield_reference(directory, starfield_ref, astap_path)
+        else:
+            self.analysis_log_message("Ingen stjernehimmel reference fundet - bruger standard offset")
+            ref_offset = {'ra_offset': 0, 'dec_offset': 0, 'rotation_offset': 0}
+        
+        for i, filename in enumerate(fits_files):
+            if self.stop_image_analysis:
+                break
+            
+            self.analysis_log_message(f"Behandler Tracking fil {i+1}/{total_files}: {filename}")
+            self.analysis_progress_var.set((i / total_files) * 100)
+            
+            filepath = os.path.join(directory, filename)
+            
+            try:
+                # Læs FITS fil og header
+                with fits.open(filepath) as hdul:
+                    image_data = hdul[0].data.astype(np.float32)
+                    header = hdul[0].header
+                
+                # Udtræk alle headers fra FITS-filen med deres originale navne
+                file_data = dict(header)
+                # Tilføj filnavn (fra FITS er det ikke med)
+                file_data['filename'] = filename
+                
+                # Beregn observatørens ECI position fra lat/lon/ele og tidspunkt
+                try:
+                    from skyfield.api import load, wgs84
+                    from astropy.time import Time
+                    
+                    ts = load.timescale()
+                    obs_time_str = file_data.get('DATE-OBS', '')
+                    
+                    # Parse tidspunkt
+                    if 'T' in obs_time_str:
+                        obs_dt = datetime.strptime(obs_time_str, '%Y-%m-%dT%H:%M:%S.%f')
+                    else:
+                        obs_dt = datetime.strptime(obs_time_str, '%Y-%m-%d %H:%M:%S.%f')
+                    
+                    t = ts.utc(obs_dt.year, obs_dt.month, obs_dt.day, 
+                              obs_dt.hour, obs_dt.minute, obs_dt.second + obs_dt.microsecond/1e6)
+                    
+                    # Beregn ECI position
+                    lat = file_data.get('LAT-OBS', 0)
+                    lon = file_data.get('LONG-OBS', 0)
+                    ele = file_data.get('ELEV-OBS', 0)
+                    
+                    earth_location = wgs84.latlon(lat, lon, ele)
+                    eci_pos = earth_location.at(t).position.km
+                    
+                    file_data['X_obs'] = eci_pos[0]
+                    file_data['Y_obs'] = eci_pos[1]
+                    file_data['Z_obs'] = eci_pos[2]
+                    
+                except Exception as e:
+                    self.analysis_log_message(f"  Advarsel: Kunne ikke beregne ECI position: {str(e)}")
+                    file_data['X_obs'] = np.nan
+                    file_data['Y_obs'] = np.nan
+                    file_data['Z_obs'] = np.nan
+                
+                # Tilføj offset fra stjernehimmel reference
+                file_data.update(ref_offset)
+                
+                # Beregn CD matrix for tracking billeder
+                # Tracking billeder har andre kolonnenavne end leapfrog
+                try:
+                    # Hent pixel scale - skal justeres for binning
+                    xbinning = file_data.get('XBINNING', 1)
+                    ybinning = file_data.get('YBINNING', 1)
+                    cdelt1 = pixelscale * xbinning  # grader per pixel
+                    cdelt2 = pixelscale * ybinning
+                    
+                    # CROTA2 er gemt som field_angle_degs i tracking billeder
+                    # Hent CROTA2 fra header og tilføj rotation offset fra ASTAP
+                    crota2_header = header.get('CROTA2', 0)
+                    crota2 = crota2_header + ref_offset.get('rotation_offset', 0)
+                    
+                    self.analysis_log_message(f"CROTA2 fra header: {crota2_header:.3f}°, offset: {ref_offset.get('rotation_offset', 0):.3f}°, bruger: {crota2:.3f}°")
+                    
+                    # Beregn reference pixels (center af billede)
+                    crpix1 = file_data.get('NAXIS1', 0) / 2.0
+                    crpix2 = file_data.get('NAXIS2', 0) / 2.0
+                    
+                    # Beregn reference værdi (teleskopets pointing med offset)
+                    crval1 = file_data.get('RA_TEL', 0) + ref_offset.get('ra_offset', 0)
+                    crval2 = file_data.get('DEC_TEL', 0) + ref_offset.get('dec_offset', 0)
+                    
+                    # Beregn CD matrix
+                    cd11, cd12, cd21, cd22 = compute_cd(
+                        cdelt1, cdelt2, crota2, crval2, ra_units_on_sky=False
+                    )
+                    
+                    file_data['CDELT1'] = cdelt1
+                    file_data['CDELT2'] = cdelt2
+                    file_data['CROTA2'] = crota2
+                    file_data['CRPIX1'] = crpix1
+                    file_data['CRPIX2'] = crpix2
+                    file_data['CRVAL1'] = crval1
+                    file_data['CRVAL2'] = crval2
+                    file_data['CD1_1'] = cd11
+                    file_data['CD1_2'] = cd12
+                    file_data['CD2_1'] = cd21
+                    file_data['CD2_2'] = cd22
+                    
+                except Exception as e:
+                    self.analysis_log_message(f"  Fejl ved CD matrix beregning: {str(e)}")
+                
+                # Find satellitposition
+                if 'starfield_ref' not in filename.lower():  # Skip reference billede
+                    sat_coords = self.find_satellite_position_tracking(
+                        image_data, header, pixelscale, save_plots, filepath, i)
+                    file_data.update(sat_coords)
+                    
+                    # Konverter pixel koordinater til RA/DEC hvis vi har position
+                    if not np.isnan(file_data.get('x_sat', np.nan)) and 'CD1_1' in file_data:
+                        try:
+                            x_sat = file_data['x_sat']
+                            y_sat = file_data['y_sat']
+                            
+                            # Brug pixel_to_radec funktionen
+                            # Opret en Series der ligner astap_row
+                            import pandas as pd
+                            header_row = pd.Series({
+                                'CRPIX1': file_data['CRPIX1'],
+                                'CRPIX2': file_data['CRPIX2'],
+                                'CRVAL1': file_data['CRVAL1'],
+                                'CRVAL2': file_data['CRVAL2'],
+                                'CD1_1': file_data['CD1_1'],
+                                'CD1_2': file_data['CD1_2'],
+                                'CD2_1': file_data['CD2_1'],
+                                'CD2_2': file_data['CD2_2']
+                            })
+                            
+                            ra_sat, dec_sat = pixel_to_radec(x_sat, y_sat, header_row)
+                            file_data['Sat_RA_Behandlet'] = ra_sat
+                            file_data['Sat_DEC_Behandlet'] = dec_sat
+                            self.analysis_log_message(f"Satellit RA/DEC: {ra_sat:.6f}°, {dec_sat:.6f}°\n =============================")
+                        except Exception as e:
+                            self.analysis_log_message(f"Fejl ved RA/DEC konvertering: {str(e)}")
+                
+                results.append(file_data)
+                
+            except Exception as e:
+                self.analysis_log_message(f"Fejl i fil {filename}: {str(e)}")
+                error_data = {'filename': filename, 'error': str(e)}
+                results.append(error_data)
+        
+        self.analysis_progress_var.set(100)
+        return pd.DataFrame(results)
+    
+    def find_satellite_line_leapfrog(self, image_data, header, save_plots, filepath, csv_index=None):
+        """Find satellitlinje i LeapFrog billeder med intelligent tidskorrektion"""
+        try:
+            
+            skalering = 4
+            height, width = image_data.shape
+            height, width = height/skalering, width/skalering
+            
+            # Nedskalerer billedet med cv2
+            data_small = cv2.resize(image_data, (0, 0), fx=1/skalering, fy=1/skalering)
+
+            # Gemmer til plot (kopier før ændringer)
+            data_plot = data_small.copy()
+            data_plot[data_plot > 1000] = 1000  # Clip høje værdier for bedre visning
+
+            # Fjern pixels under medianen+5
+            data_small[data_small < np.median(data_small)+5] = 0
+
+            # Fjern objekter bestående af mindre end 100 pixels
+            num_labels, labels_im = cv2.connectedComponents(data_small.astype(np.uint8))
+            # Beregn størrelsen af hver komponent vectoriseret
+            label_counts = np.bincount(labels_im.flat)
+            # Find labels der skal fjernes (mindre end 100 pixels)
+            small_labels = np.where(label_counts < 100)[0]
+            # Opret mask for alle små objekter på én gang
+            small_objects_mask = np.isin(labels_im, small_labels)
+            # Fjern alle små objekter i én operation
+            data_small[small_objects_mask] = 0
+
+            #gør billedet binært
+            _, binary_image = cv2.threshold(data_small, 1, 1, cv2.THRESH_BINARY)
+                    
+            # Find linjer med Hough transform
+            binary_uint8 = (binary_image * 255).astype(np.uint8)
+            lines = cv2.HoughLinesP(binary_uint8, 1, np.pi / 180, threshold=100, 
+                                   minLineLength=25*skalering, maxLineGap=10)
+            
+            if lines is not None:
+                self.analysis_log_message(f"Antal linjer fundet: {len(lines)}")
+            else:
+                self.analysis_log_message("❌ Ingen linjer fundet af Hough transform")
+            
+            result = {'antal_linjer': 0, 'x_sat': np.nan, 'y_sat': np.nan, 'corrected_obs_time': None}
+            
+            if lines is not None:
+                antal_linjer = len(lines)
+                
+                best_line = max(lines, key=lambda l: np.hypot(l[0][2] - l[0][0], l[0][3] - l[0][1]))
+                x1, y1, x2, y2 = best_line[0]
+                
+                # Tjek om linje rammer billedkanten
+                edge_margin = 50
+                is_edge1 = (x1 < edge_margin or x1 > width - edge_margin or
+                           y1 < edge_margin or y1 > height - edge_margin)
+                is_edge2 = (x2 < edge_margin or x2 > width - edge_margin or
+                           y2 < edge_margin or y2 > height - edge_margin)
+                
+                self.analysis_log_message(f"Linje punkter:({x1:.0f},{y1:.0f})({x2:.0f},{y2:.0f})")
+                self.analysis_log_message(f"Kant: Punkt1={is_edge1}, Punkt2={is_edge2}")
+                
+                # === INTELLIGENT TIDSKORREKTION ===
+                # Hent data fra FITS header
+                tle1 = header.get('TLE1', None)
+                tle2 = header.get('TLE2', None)
+                # Prøv DATE-STA først, derefter DATE_STA som fallback
+                tidsstempel_start = header.get('DATE-STA', '') or header.get('DATE_STA', '')
+                tidsstempel_slut = header.get('DATE-END', '') or header.get('DATE_END', '')
+                longitude = header.get('LONG-OBS', 0)
+                latitude = header.get('LAT-OBS', 0)  # Note: bruges LAT-OBS ikke LAT--OBS som i original
+                elevation = header.get('ELEV-OBS', 0)
+                rotation_angle = header.get('CROTA2', 0)
+                
+                corrected_obs_time = None
+                
+                if tle1 and tle2 and tidsstempel_start and tidsstempel_slut:
+                    try:
+                        # Parse tidsstempler
+                        obs_time_start = datetime.strptime(tidsstempel_start, '%Y-%m-%dT%H:%M:%S.%f')
+                        obs_time_slut = datetime.strptime(tidsstempel_slut, '%Y-%m-%dT%H:%M:%S.%f')
+                        
+                        # Beregn midtertidspunkt for satellitretningsberegning
+                        delta_obs_time = obs_time_slut - obs_time_start
+                        obs_time_mid = obs_time_start + timedelta(seconds=delta_obs_time.total_seconds()/2)
+                        
+                        # Beregn satellitretning med Skyfield ved midtertidspunkt
+                        from skyfield.api import load, EarthSatellite, wgs84
+                        ts = load.timescale()
+                        t_mid = ts.utc(obs_time_mid.year, obs_time_mid.month, obs_time_mid.day, 
+                                      obs_time_mid.hour, obs_time_mid.minute, obs_time_mid.second)
+                        
+                        satellite = EarthSatellite(tle1, tle2, name='sat', ts=ts)
+                        observer = wgs84.latlon(latitude, longitude, elevation)
+                        difference = satellite - observer
+                        topocentric = difference.at(t_mid)
+                        enu_velocity = topocentric.velocity.km_per_s
+                        east_velocity = enu_velocity[0]
+                        
+                        self.analysis_log_message(f"Satellit bevæger sig mod {'øst' if east_velocity > 0 else 'vest'}")
+                        
+                        # Beregn skillelinje baseret på rotation
+                        theta_rad = np.radians(-rotation_angle)  # MINUS som i original
+                        x_c = (width - 1) / 2
+                        y_c = (height - 1) / 2
+                        nx = np.sin(theta_rad)
+                        ny = np.cos(theta_rad)
+                        
+                        # Intelligent positionsbestemmelse baseret på kantdetektering
+                        if is_edge1 or is_edge2:
+                            self.analysis_log_message("Satellit linje rammer billedkant")
+                            
+                            if is_edge1:
+                                non_edge_point = (x2, y2)
+                                edge_point = (x1, y1)
+                            else:
+                                non_edge_point = (x1, y1)
+                                edge_point = (x2, y2)
+                            
+                            mid_x, mid_y = non_edge_point
+                            
+                            # Beregn side-værdi for kantpunkt
+                            px, py = edge_point
+                            dx_p = px - x_c
+                            dy_p = y_c - py  # Y er "nedad" i billedkoordinater
+                            side_p = dx_p * ny - dy_p * nx
+                            
+                            # Bestem tidskorrektion baseret på satellitretning og kantposition
+                            if side_p >= 0:  # Kantpunkt i vest
+                                if east_velocity > 0:
+                                    self.analysis_log_message("Kantpunkt i vest, satellit mod øst → slutpunkt, brug DATE-END")
+                                    corrected_obs_time = obs_time_slut
+                                else:
+                                    self.analysis_log_message("Kantpunkt i vest, satellit mod vest → startpunkt, brug DATE-BEG")
+                                    corrected_obs_time = obs_time_start
+                            else:  # Kantpunkt i øst
+                                if east_velocity > 0:
+                                    self.analysis_log_message("Kantpunkt i øst, satellit mod øst → startpunkt, brug DATE-BEG")
+                                    corrected_obs_time = obs_time_start
+                                else:
+                                    self.analysis_log_message("Kantpunkt i øst, satellit mod vest → slutpunkt, brug DATE-END")
+                                    corrected_obs_time = obs_time_slut
+                        else:
+                            # Ingen kant - brug midtpunkt og halv exposure tid
+                            mid_x = (x1 + x2) // 2
+                            mid_y = (y1 + y2) // 2
+                            corrected_obs_time = obs_time_start + pd.Timedelta(seconds=delta_obs_time.total_seconds()/2)
+                            self.analysis_log_message(f"Ingen kant - midtpunkt, +{delta_obs_time.total_seconds()/2:.2f} sek")
+                            
+                    except Exception as e:
+                        self.analysis_log_message(f"Advarsel: Tidskorrektion fejlede: {str(e)}")
+                        # Fallback til standard metode
+                        if is_edge1 or is_edge2:
+                            if is_edge1:
+                                mid_x, mid_y = x2, y2
+                            else:
+                                mid_x, mid_y = x1, y1
+                        else:
+                            mid_x = (x1 + x2) // 2
+                            mid_y = (y1 + y2) // 2
+                else:
+                    # Manglende header data - brug standard metode
+                    if is_edge1 or is_edge2:
+                        if is_edge1:
+                            mid_x, mid_y = x2, y2
+                        else:
+                            mid_x, mid_y = x1, y1
+                    else:
+                        mid_x = (x1 + x2) // 2
+                        mid_y = (y1 + y2) // 2
+                
+                result = {
+                    'antal_linjer': antal_linjer,
+                    'x_sat': mid_x*skalering,
+                    'y_sat': mid_y*skalering,
+                    'x1': x1*skalering, 'y1': y1*skalering, 'x2': x2*skalering, 'y2': y2*skalering,
+                    'corrected_obs_time': corrected_obs_time.strftime('%Y-%m-%dT%H:%M:%S.%f') if corrected_obs_time else None,
+                    'rotation_angle': rotation_angle  # Tilføj rotation vinkel til plotting
+                }
+                
+                # Plot hvis ønsket
+                if save_plots:
+                    self.plot_leapfrog_result(image_data, result, filepath, save_plots, csv_index)
+            else:
+                self.analysis_log_message("Ingen satellitlinje fundet - returnerer tomt resultat")
+            
+
+            return result
+            
+        except Exception as e:
+            self.analysis_log_message(f"Fejl ved linjefinding: {str(e)}")
+            return {'antal_linjer': 0, 'x_sat': np.nan, 'y_sat': np.nan, 'corrected_obs_time': None, 'error': str(e)}
+    
+    def find_satellite_position_tracking(self, image_data, header, pixelscale, save_plots, filepath, csv_index=None):
+        """Find satellitposition i Tracking billeder"""
+        try:
+            # Find lyseste objekter
+            num_top_pixels = 1000
+            flat_indices = np.argpartition(image_data.ravel(), -num_top_pixels)[-num_top_pixels:]
+            sorted_indices = flat_indices[np.argsort(image_data.ravel()[flat_indices])[::-1]]
+            sorted_positions = np.unravel_index(sorted_indices, image_data.shape)
+            
+            # Lav maske omkring lyseste områder
+            neighbor_radius = 80
+            mask = np.zeros_like(image_data, dtype=bool)
+            
+            for y, x in zip(sorted_positions[0], sorted_positions[1]):
+                y_start = max(0, y - neighbor_radius)
+                y_end = min(image_data.shape[0], y + neighbor_radius + 1)
+                x_start = max(0, x - neighbor_radius)
+                x_end = min(image_data.shape[1], x + neighbor_radius + 1)
+                mask[y_start:y_end, x_start:x_end] = True
+            
+            # Threshold og label objekter
+            thresholded_data = mask & (image_data > np.median(image_data) + 30) # Virkede med mean + 0.75*std
+            labeled_array, num_features = label(thresholded_data)
+            object_slices = find_objects(labeled_array)
+            
+            # Find lyseste objekt der er stort nok
+            brightest_object_slice = None
+            max_val = -np.inf
+            
+            for slice_ in object_slices:
+                if slice_ is None:
+                    continue
+                region = image_data[slice_]
+                if region.shape[0] >= 20 and region.shape[1] >= 20:
+                    region_mean = np.mean(region)
+                    if region_mean > max_val:
+                        max_val = region_mean
+                        brightest_object_slice = slice_
+            
+            result = {'x_sat': np.nan, 'y_sat': np.nan, 'pixel_sum': np.nan}
+            
+            if brightest_object_slice is not None:
+                y_start, y_stop = brightest_object_slice[0].start, brightest_object_slice[0].stop
+                x_start, x_stop = brightest_object_slice[1].start, brightest_object_slice[1].stop
+                y_center = (y_start + y_stop - 1) // 2
+                x_center = (x_start + x_stop - 1) // 2
+                
+                # Beregn pixelsum i cirkel omkring centrum
+                radius_pixelsum = self.tracking_pixelsum_radius.get()
+                Y_grid, X_grid = np.ogrid[:image_data.shape[0], :image_data.shape[1]]
+                distance_from_center = np.sqrt((X_grid - x_center)**2 + (Y_grid - y_center)**2)
+                circular_mask = distance_from_center <= radius_pixelsum
+                pixel_sum = np.sum(image_data[circular_mask])
+                
+                result = {
+                    'x_sat': x_center,
+                    'y_sat': y_center,
+                    'pixel_sum': pixel_sum,
+                    'image_median': np.median(image_data),
+                    'image_mean': np.mean(image_data)
+                }
+                
+                # Plot hvis ønsket
+                if save_plots:
+                    self.plot_tracking_result(image_data, result, filepath, save_plots, radius_pixelsum, csv_index)
+            
+            return result
+            
+        except Exception as e:
+            self.analysis_log_message(f"Fejl ved positionsfinding: {str(e)}")
+            return {'x_sat': np.nan, 'y_sat': np.nan, 'pixel_sum': np.nan, 'error': str(e)}
+    
+    def analyze_starfield_reference(self, directory, starfield_file, astap_path):
+        """Analyser stjernehimmel reference med ASTAP"""
+        try:
+            self.analysis_log_message(f"Analyserer stjernehimmel reference med ASTAP...")
+            
+            filepath = os.path.join(directory, starfield_file)
+            wcsfile = os.path.join(directory, starfield_file.replace(".fits", ".wcs"))
+            
+            # Kør ASTAP
+            result = subprocess.run(
+                [astap_path, "-f", filepath, "-wcs", wcsfile],
+                capture_output=True, text=True
+            )
+            
+            if result.returncode != 0:
+                self.analysis_log_message(f"ASTAP fejlede: {result.stderr}")
+                return {'ra_offset': 0, 'dec_offset': 0, 'rotation_offset': 0}
+            
+            # Læs WCS resultater
+            if os.path.exists(wcsfile):
+                with fits.open(wcsfile) as hdul:
+                    wcs_header = hdul[0].header
+                
+                # Sammenlign med forventet position fra FITS header
+                with fits.open(filepath) as hdul:
+                    original_header = hdul[0].header
+                
+                expected_ra = original_header.get('RA_TEL', 0)
+                expected_dec = original_header.get('DEC_TEL', 0)
+                expected_rotation = original_header.get('field_angle_degs', 0)
+                
+                actual_ra = wcs_header.get('CRVAL1', expected_ra)
+                actual_dec = wcs_header.get('CRVAL2', expected_dec)
+                actual_rotation = wcs_header.get('CROTA2', expected_rotation)
+                
+                ra_offset = actual_ra - expected_ra
+                dec_offset = actual_dec - expected_dec
+                rotation_offset = actual_rotation - expected_rotation
+                
+                self.analysis_log_message(f"ASTAP offset: RA={ra_offset:.6f}°, DEC={dec_offset:.6f}°, ROT={rotation_offset:.3f}°")
+                
+                # Ryd op
+                os.remove(wcsfile)
+                
+                return {
+                    'ra_offset': ra_offset,
+                    'dec_offset': dec_offset, 
+                    'rotation_offset': rotation_offset
+                }
+            else:
+                self.analysis_log_message("ASTAP producerede ingen WCS fil")
+                return {'ra_offset': 0, 'dec_offset': 0, 'rotation_offset': 0}
+                
+        except Exception as e:
+            self.analysis_log_message(f"Fejl ved ASTAP analyse: {str(e)}")
+            return {'ra_offset': 0, 'dec_offset': 0, 'rotation_offset': 0}
+    
+    def plot_leapfrog_result(self, image_data, result, filepath, save_plot, csv_index=None):
+        """Plot LeapFrog resultat - gemmer kun til fil, viser ikke interaktivt"""
+        try:
+            if not plt:
+                return
+            
+            # Kun gem plot til fil - vis IKKE interaktivt fra worker thread
+            if not save_plot:
+                return  # Spring over hvis vi ikke gemmer
+            
+            # Downscale til visning
+            target_height, target_width = 639, 958
+            original_height, original_width = image_data.shape
+            scale_y = target_height / original_height
+            scale_x = target_width / original_width
+            
+            downscaled_image = zoom(image_data, (scale_y, scale_x), order=1)
+            downscaled_image = np.clip(downscaled_image, None, 600)
+            
+            
+            # Scale koordinater
+            if not np.isnan(result['x_sat']):
+                scaled_x = result['x_sat'] * scale_x
+                scaled_y = result['y_sat'] * scale_y
+                
+                # Brug Agg backend for at undgå GUI
+                import matplotlib
+                matplotlib.use('Agg')
+                from matplotlib.patches import Circle
+                
+                plt.figure(figsize=(12, 8))
+                plt.imshow(downscaled_image, cmap='gray')
+                plt.scatter(scaled_x, scaled_y, color='green', marker='x', s=100, label='Satellit position')
+                
+                if 'x1' in result:
+                    scaled_x1 = result['x1'] * scale_x
+                    scaled_y1 = result['y1'] * scale_y
+                    scaled_x2 = result['x2'] * scale_x
+                    scaled_y2 = result['y2'] * scale_y
+                    
+                    # Tilføj cirkler omkring endepunkterne i stedet for linje
+                    circle_radius = 5  # Radius i pixels for cirklerne
+                    circle1 = Circle((scaled_x1, scaled_y1), circle_radius, edgecolor='red', 
+                                   facecolor='none', linewidth=1, label='Endepunkt 1')
+                    circle2 = Circle((scaled_x2, scaled_y2), circle_radius, edgecolor='blue', 
+                                   facecolor='none', linewidth=1, label='Endepunkt 2')
+                    plt.gca().add_patch(circle1)
+                    plt.gca().add_patch(circle2)
+                
+                # Tilføj øst/vest skillelinje hvis vi har rotation data
+                if 'rotation_angle' in result:
+                    rotation_angle = result['rotation_angle']
+                    
+                    # Samme beregning som i Func_fagprojekt.py (inspiration fra markeret kode)
+                    theta_rad = np.radians(-rotation_angle)  # MINUS som i original
+                    
+                    # Brug scaled dimensioner
+                    height_scaled, width_scaled = downscaled_image.shape
+                    x_c = (width_scaled - 1) / 2
+                    y_c = (height_scaled - 1) / 2
+                    
+                    # Beregn linjens retning (samme som i Func_fagprojekt.py)
+                    dx_line = np.sin(theta_rad)
+                    dy_line = -np.cos(theta_rad)
+                    
+                    # Find linjens endepunkter (går gennem centrum)
+                    t_vals = np.linspace(-max(width_scaled, height_scaled), max(width_scaled, height_scaled), 1000)
+                    x_line_all = x_c + t_vals * dx_line
+                    y_line_all = y_c + t_vals * dy_line
+                    
+                    # Begræns til billedets grænser
+                    mask_inside = (
+                        (x_line_all >= 0) & (x_line_all < width_scaled) &
+                        (y_line_all >= 0) & (y_line_all < height_scaled)
+                    )
+                    x_line = x_line_all[mask_inside]
+                    y_line = y_line_all[mask_inside]
+                    
+                    # Tegn skillelinjen
+                    plt.plot(x_line, y_line, color='yellow', linewidth=2, linestyle='--', 
+                            label='Øst/Vest skillelinje', alpha=0.8)
+                    
+                    # Tilføj tekst labels for øst og vest
+                    # Hvis linjen er nord-syd, skal øst/vest placeres vinkelret på linjen
+                    # Beregn vinkelret retning til skillelinjen
+                    offset = 50  # pixels
+                    # Vinkelret retning: rotér 90 grader
+                    dx_perp = -dy_line  # Vinkelret X-komponent
+                    dy_perp = dx_line   # Vinkelret Y-komponent
+                    
+                    # Placér øst til venstre for linjen (negativ vinkelret retning)
+                    east_x = x_c - offset * dx_perp
+                    east_y = y_c - offset * dy_perp
+                    # Placér vest til højre for linjen (positiv vinkelret retning)
+                    west_x = x_c + offset * dx_perp
+                    west_y = y_c + offset * dy_perp
+                    
+                    plt.text(west_x, west_y, 'VEST', color='yellow', fontsize=12, 
+                            fontweight='bold', ha='center', va='center',
+                            bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
+                    plt.text(east_x, east_y, 'ØST', color='yellow', fontsize=12, 
+                            fontweight='bold', ha='center', va='center',
+                            bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
+                
+                plt.legend()
+                # Use CSV index in title if available
+                if csv_index is not None:
+                    plt.title(f"Plot {csv_index+1:03d}: LeapFrog analyse - {os.path.basename(filepath)}")
+                else:
+                    plt.title(f"LeapFrog analyse: {os.path.basename(filepath)}")
+                plt.xlabel("Pixel X")
+                plt.ylabel("Pixel Y")
+                
+                # Gem til fil med CSV index i navnet
+                if csv_index is not None:
+                    # Use existing format but with CSV index: filename_XXX_plot.png
+                    base_name = os.path.splitext(os.path.basename(filepath))[0]
+                    directory = os.path.dirname(filepath)
+                    # Remove existing number if present and add CSV index
+                    import re
+                    base_name_clean = re.sub(r'_\d{3}$', '', base_name)
+                    plot_path = os.path.join(directory, f"{base_name_clean}_{csv_index+1:03d}_plot.png")
+                else:
+                    plot_path = filepath.replace('.fits', '_plot.png')
+                plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                plt.close()  # Vigtigt: luk figuren
+                
+                self.analysis_log_message(f"Plot gemt")
+                
+        except Exception as e:
+            self.analysis_log_message(f"Fejl ved plotting: {str(e)}")
+    
+    def plot_tracking_result(self, image_data, result, filepath, save_plot, radius, csv_index=None):
+        """Plot Tracking resultat - gemmer kun til fil, viser ikke interaktivt"""
+        try:
+            if not plt:
+                return
+            
+            # Kun gem plot til fil - vis IKKE interaktivt fra worker thread
+            if not save_plot:
+                return  # Spring over hvis vi ikke gemmer
+            
+            # Downscale til visning
+            target_height, target_width = 639, 958
+            original_height, original_width = image_data.shape
+            scale_y = target_height / original_height
+            scale_x = target_width / original_width
+            
+            downscaled_image = zoom(image_data, (scale_y, scale_x), order=1)
+            
+            # Scale koordinater
+            if not np.isnan(result['x_sat']):
+                scaled_x = result['x_sat'] * scale_x
+                scaled_y = result['y_sat'] * scale_y
+                scaled_radius = radius * min(scale_x, scale_y)
+                
+                # Vis kun gyldige pixels for at undgå problemer med display
+                valid_pixels = downscaled_image[downscaled_image > 0]
+                if len(valid_pixels) > 0:
+                    vmin = np.percentile(valid_pixels, 5)
+                    vmax = np.percentile(valid_pixels, 99)
+                else:
+                    vmin, vmax = 0, 1
+                
+                # Brug Agg backend for at undgå GUI
+                import matplotlib
+                matplotlib.use('Agg')
+                
+                plt.figure(figsize=(12, 8))
+                plt.imshow(downscaled_image, cmap='gray', vmin=vmin, vmax=vmax)
+                
+                # Tilføj cirkel og centrum
+                circle = Circle((scaled_x, scaled_y), scaled_radius, edgecolor='cyan', 
+                               facecolor='none', linewidth=2, label=f'Pixelsum radius ({radius}px)')
+                plt.gca().add_patch(circle)
+                plt.scatter(scaled_x, scaled_y, color='red', marker='+', s=100, label='Satellit centrum')
+                
+                plt.legend()
+                # Use CSV index in title if available
+                if csv_index is not None:
+                    plt.title(f"Plot {csv_index+1:03d}: Tracking analyse - {os.path.basename(filepath)}\n"
+                             f"Pixel sum: {result.get('pixel_sum', 0):.0f}")
+                else:
+                    plt.title(f"Tracking analyse: {os.path.basename(filepath)}\n"
+                             f"Pixel sum: {result.get('pixel_sum', 0):.0f}")
+                plt.xlabel("Pixel X")
+                plt.ylabel("Pixel Y")
+                
+                # Gem til fil med CSV index i navnet
+                if csv_index is not None:
+                    # Use existing format but with CSV index: filename_XXX_plot.png
+                    base_name = os.path.splitext(os.path.basename(filepath))[0]
+                    directory = os.path.dirname(filepath)
+                    # Remove existing number if present and add CSV index
+                    import re
+                    base_name_clean = re.sub(r'_\d{3}$', '', base_name)
+                    plot_path = os.path.join(directory, f"{base_name_clean}_{csv_index+1:03d}_plot.png")
+                else:
+                    plot_path = filepath.replace('.fits', '_plot.png')
+                plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                plt.close()  # Vigtigt: luk figuren
+                
+                self.analysis_log_message(f"Plot gemt: {os.path.basename(plot_path)}")
+                
+        except Exception as e:
+            self.analysis_log_message(f"Fejl ved plotting: {str(e)}")
+
+    def display_plots_in_gui(self, directory):
+        """Vis plot billeder i GUI'ens plot visning widget"""
+        try:
+            # Fjern placeholder
+            if hasattr(self, 'plot_placeholder'):
+                self.plot_placeholder.destroy()
+            
+            # Ryd eksisterende plots
+            for widget in self.plot_scrollable_frame.winfo_children():
+                widget.destroy()
+            
+            # Find alle gemte plot filer
+            plot_files = sorted([f for f in os.listdir(directory) if f.endswith('_plot.png')])
+            
+            if not plot_files:
+                ttk.Label(self.plot_scrollable_frame, 
+                         text="Ingen plots fundet", 
+                         font=('Arial', 10), foreground='red').pack(pady=20)
+                return
+            
+            self.analysis_log_message(f"Viser {len(plot_files)} plots i GUI...")
+            
+            # Vis hvert plot
+            for i, plot_file in enumerate(plot_files):
+                plot_path = os.path.join(directory, plot_file)
+                
+                try:
+                    # Load billede med PIL
+                    from PIL import Image, ImageTk
+                    img = Image.open(plot_path)
+                    
+                    # Resize til GUI (maksimal bredde 450px for bedre visning)
+                    max_width = 550
+                    if img.width > max_width:
+                        ratio = max_width / img.width
+                        new_height = int(img.height * ratio)
+                        img = img.resize((max_width, new_height), Image.Resampling.LANCZOS)
+                    
+                    # Konverter til tkinter format
+                    photo = ImageTk.PhotoImage(img)
+                    
+                    # Frame for denne plot
+                    plot_frame = ttk.LabelFrame(self.plot_scrollable_frame, 
+                                              text=f"{i+1}. {plot_file.replace('_plot.png', '')}")
+                    plot_frame.pack(fill='x', padx=5, pady=5)
+                    
+                    # Label til at vise billedet
+                    img_label = tk.Label(plot_frame, image=photo)
+                    img_label.image = photo  # Behold reference
+                    img_label.pack(padx=5, pady=5)
+                    
+                except Exception as e:
+                    # Fejl frame
+                    error_frame = ttk.LabelFrame(self.plot_scrollable_frame, 
+                                               text=f"Fejl: {plot_file}")
+                    error_frame.pack(fill='x', padx=5, pady=5)
+                    
+                    ttk.Label(error_frame, 
+                             text=f"Kunne ikke indlæse: {str(e)}", 
+                             foreground='red').pack(padx=5, pady=5)
+            
+            # Opdater scroll region
+            self.plot_scrollable_frame.update_idletasks()
+            self.plot_canvas.configure(scrollregion=self.plot_canvas.bbox("all"))
+            
+            self.analysis_log_message(f"Plots vist i GUI - scroll for at se alle")
+                
+        except Exception as e:
+            self.analysis_log_message(f"Fejl ved visning af plots i GUI: {str(e)}")
+
+    def show_plots_manual(self):
+        """Manuel visning af plots i GUI fra valgt mappe"""
+        directory = self.analysis_dir_entry.get().strip()
+        
+        if not directory or not os.path.exists(directory):
+            # Lad brugeren vælge en mappe
+            directory = filedialog.askdirectory(
+                title="Vælg mappe med plot billeder",
+                initialdir=os.getcwd()
+            )
+            if not directory:
+                return
+                
+        self.display_plots_in_gui(directory)
+
+    def show_analysis_plots(self, directory):
+        """Vis alle gemte analyse plots efter analysen er færdig"""
+        try:
+            import matplotlib
+            matplotlib.use('TkAgg')  # Skift tilbage til GUI backend for visning
+            
+            # Find alle gemte plot filer
+            plot_files = [f for f in os.listdir(directory) if f.endswith('_plot.png')]
+            
+            if not plot_files:
+                self.analysis_log_message("Ingen plot filer fundet til visning")
+                return
+            
+            self.analysis_log_message(f"Viser {len(plot_files)} gemte plots...")
+            
+            # Vis op til 6 plots ad gangen
+            max_plots_per_window = 6
+            
+            for i in range(0, len(plot_files), max_plots_per_window):
+                batch = plot_files[i:i+max_plots_per_window]
+                
+                # Beregn subplot layout
+                n_plots = len(batch)
+                if n_plots <= 2:
+                    rows, cols = 1, n_plots
+                elif n_plots <= 4:
+                    rows, cols = 2, 2
+                else:
+                    rows, cols = 2, 3
+                
+                fig, axes = plt.subplots(rows, cols, figsize=(15, 10))
+                if n_plots == 1:
+                    axes = [axes]
+                elif rows == 1 or cols == 1:
+                    axes = axes.flatten()
+                else:
+                    axes = axes.flatten()
+                
+                for j, plot_file in enumerate(batch):
+                    img_path = os.path.join(directory, plot_file)
+                    
+                    # Læs og vis billede
+                    from PIL import Image
+                    img = Image.open(img_path)
+                    axes[j].imshow(img)
+                    axes[j].set_title(plot_file.replace('_plot.png', ''), fontsize=10)
+                    axes[j].axis('off')
+                
+                # Skjul tomme subplots
+                for k in range(n_plots, len(axes)):
+                    axes[k].axis('off')
+                
+                plt.tight_layout()
+                plt.show()
+                
+        except Exception as e:
+            self.analysis_log_message(f"Fejl ved visning af plots: {str(e)}")
+
+
+    # =================
+    # TLE BEREGNINGS METODER
+    # =================
+    
+    def log_tle_message(self, message):
+        """Tilføj besked til TLE loggen med tidsstempel"""
+        try:
+            if hasattr(self, 'tle_log_text'):
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                log_entry = f"[{timestamp}] {message}\n"
+                self.tle_log_text.insert(tk.END, log_entry)
+                self.tle_log_text.see(tk.END)
+                self.root.update()
+        except:
+            pass
+    
+    def select_tle_directory(self):
+        """Vælg mappe med CSV-fil til TLE beregning"""
+        directory = filedialog.askdirectory(
+            title="Vælg mappe med data CSV-fil",
+            initialdir=os.getcwd()
+        )
+        if directory:
+            self.tle_dir_entry.delete(0, tk.END)
+            self.tle_dir_entry.insert(0, directory)
+            self.tle_csv_directory = directory
+            
+            # Automatisk indlæs data
+            self.load_tle_csv_data(directory)
+    
+    def load_tle_csv_data(self, directory):
+        """Indlæs CSV-fil fra mappe til TLE beregning"""
+        try:
+            self.log_tle_message(f"Søger efter CSV-fil i: {directory}")
+            
+            # Find CSV-filer der starter med 'data'
+            csv_files = [f for f in os.listdir(directory) if f.lower().startswith('data') and f.lower().endswith('.csv')]
+            
+            if not csv_files:
+                self.log_tle_message("❌ Ingen CSV-filer fundet der starter med 'data'")
+                self.tle_status_label.config(text="Ingen data CSV-fil fundet i mappen", foreground='red')
+                messagebox.showerror("Fejl", "Ingen CSV-filer fundet der starter med 'data' i den valgte mappe")
+                return
+            
+            # Brug første fil
+            csv_file = csv_files[0]
+            csv_path = os.path.join(directory, csv_file)
+            self.log_tle_message(f"Fundet CSV-fil: {csv_file}")
+            
+            # Indlæs CSV-fil
+            df = pd.read_csv(csv_path)
+            self.log_tle_message(f"✅ Indlæst {len(df)} observationer")
+
+            # Filtrer bort rækker med OBSTYPE = 'stjernehimmel'
+            if 'OBSTYPE' in df.columns:
+                before_filter = len(df)
+                df = df[df['OBSTYPE'] != 'stjernehimmel']
+                after_filter = len(df)
+                if before_filter != after_filter:
+                    filtered_count = before_filter - after_filter
+                    self.log_tle_message(f"Filtreret {filtered_count} stjernehimmel observationer bort")
+                    self.log_tle_message(f"✅ {after_filter} observationer tilbage efter filtrering")
+            
+            # Filtrer bort rækker hvor Sat_RA_Behandlet ikke har en værdi
+            if 'Sat_RA_Behandlet' in df.columns:
+                before_filter = len(df)
+                df = df[df['Sat_RA_Behandlet'].notna()]
+                after_filter = len(df)
+                if before_filter != after_filter:
+                    filtered_count = before_filter - after_filter
+                    self.log_tle_message(f"Filtreret {filtered_count} observationer uden Behandlet data bort")
+                    self.log_tle_message(f"✅ {after_filter} observationer tilbage efter filtrering")
+            
+            # Tjek at nødvendige kolonner findes for TLE beregning
+            required_columns = ['Sat_RA_Behandlet', 'Sat_DEC_Behandlet', 'X_obs', 'Y_obs', 'Z_obs', 'DATE-OBS']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            
+            if missing_columns:
+                self.log_tle_message(f"❌ Manglende kolonner: {', '.join(missing_columns)}")
+                messagebox.showerror("Fejl", f"CSV-filen mangler følgende kolonner:\n{', '.join(missing_columns)}")
+                return
+            
+            # Gem data
+            self.tle_csv_data = df
+            
+            # Opdater index dropdown menus
+            self.log_tle_message("Opdaterer index valgmuligheder...")
+            indices = [str(i) for i in range(len(df))]
+            
+            self.index1_combo['values'] = indices
+            self.index2_combo['values'] = indices
+            self.index3_combo['values'] = indices
+            
+            # Sæt standard valg (første, midterste, sidste)
+            if len(df) >= 3:
+                middle_idx = len(df) // 2
+                self.index1_combo.set(str(0))
+                self.index2_combo.set(str(middle_idx))
+                self.index3_combo.set(str(len(df) - 1))
+                self.log_tle_message(f"✅ Standard indices sat: 0, {middle_idx}, {len(df)-1}")
+            else:
+                self.log_tle_message("ADVARSEL: Mindre end 3 observationer i CSV!")
+                messagebox.showwarning("Advarsel", "CSV-filen indeholder mindre end 3 observationer.\nDer skal være mindst 3 observationer for TLE beregning.")
+            
+            # Opdater status
+            self.tle_status_label.config(text=f"✅ Data indlæst: {csv_file} ({len(df)} obs.)", foreground='green')
+            self.log_tle_message(f"✅ CSV data klar til TLE beregning")
+            self.log_tle_message(f"   Kolonner: {', '.join(df.columns.tolist()[:10])}{'...' if len(df.columns) > 10 else ''}")
+            
+            # Tjek om TLE kolonner findes og beregn afvigelser hvis ja
+            if 'TLE1' in df.columns and 'TLE2' in df.columns:
+                self.log_tle_message("TLE kolonner fundet - beregner afvigelser...")
+                self.calculate_tle_deviations(df)
+            else:
+                self.log_tle_message("TLE1 og TLE2 kolonner ikke fundet - kan ikke beregne afvigelser endnu")
+            
+        except Exception as e:
+            error_msg = f"Fejl ved indlæsning af CSV: {str(e)}"
+            self.log_tle_message(f"❌ {error_msg}")
+            self.tle_status_label.config(text="Fejl ved indlæsning", foreground='red')
+            messagebox.showerror("Fejl", error_msg)
+            import traceback
+            print(traceback.format_exc())
+    
+    def xyz_to_radec(self, x, y, z):
+        """
+        Konverterer ECI-koordinater (x,y,z) [km] til RA (grader) og DEC (grader).
+        """
+        r = np.array([x, y, z], dtype=float)
+        norm = np.linalg.norm(r)
+        if norm == 0:
+            raise ValueError("Vector has zero length")
+
+        # RA i radianer
+        ra_rad = np.arctan2(r[1], r[0])
+        if ra_rad < 0:
+            ra_rad += 2*np.pi  # sikre 0–360°
+
+        # DEC i radianer
+        dec_rad = np.arcsin(r[2] / norm)
+
+        ra_degrees = np.degrees(ra_rad)
+        dec_degrees = np.degrees(dec_rad)
+
+        return ra_degrees, dec_degrees
+    
+    def angle_diff_deg(self, a, b):
+        """Returnerer vinkel-differens a-b i grader, wrap omkring 360, i intervallet [-180, 180]."""
+        d = (a - b + 180) % 360 - 180
+        return d
+    
+    def calculate_tle_deviations(self, results_df):
+        """Beregn TLE afvigelser og opdater plot"""
+        try:
+            # Hent TLE data fra DataFrame
+            if 'TLE1' not in results_df.columns or 'TLE2' not in results_df.columns:
+                self.log_tle_message("❌ TLE1 og/eller TLE2 kolonner ikke fundet i data")
+                return
+                
+            tle_line1, tle_line2 = results_df['TLE1'].iloc[0], results_df['TLE2'].iloc[0]
+            
+            self.log_tle_message("Beregner satellit positioner fra TLE...")
+            
+            # Tjek påkrævede kolonner for calculate_satellite_data
+            required_cols = ['DATE-OBS', 'LONG-OBS', 'ELEV-OBS']
+            missing_cols = [col for col in required_cols if col not in results_df.columns]
+            
+            # Tjek LAT kolonne (kan have to forskellige navne)
+            has_lat = 'LAT-OBS' in results_df.columns or 'LAT--OBS' in results_df.columns
+            if not has_lat:
+                missing_cols.append('LAT-OBS eller LAT--OBS')
+            
+            if missing_cols:
+                self.log_tle_message(f"❌ Manglende kolonner for satellite beregning: {missing_cols}")
+                self.log_tle_message(f"Tilgængelige kolonner: {list(results_df.columns)}")
+                return
+            
+            # Tjek om Func_fagprojekt funktioner er tilgængelige
+            try:
+                # Reset DataFrame index for at sikre sequential integer indices (0,1,2...)
+                # Dette er nødvendigt fordi calculate_satellite_data forventer sequential indices
+                df_for_calc = results_df.reset_index(drop=True)
+                self.log_tle_message(f"Reset DataFrame index for beregning")
+                
+                # Beregn satellit data
+                afstand, vinkel, sat_pos, earth_pos, obs_points = calculate_satellite_data(
+                    df_for_calc, tle_line1, tle_line2
+                )
+            except Exception as func_error:
+                self.log_tle_message(f"❌ Fejl i calculate_satellite_data: {str(func_error)}")
+                self.log_tle_message(f"Fejl type: {type(func_error).__name__}")
+                self.log_tle_message("Tjek at Func_fagprojekt.py er tilgængelig og kompatibel")
+                # Log DataFrame info for debugging
+                self.log_tle_message(f"DataFrame kolonner: {list(results_df.columns)}")
+                self.log_tle_message(f"DataFrame størrelse: {results_df.shape}")
+                self.log_tle_message(f"DataFrame index: {results_df.index.tolist()}")
+                if len(results_df) > 0:
+                    sample_row = results_df.iloc[0]
+                    self.log_tle_message(f"Første række eksempel: DATE-OBS={sample_row.get('DATE-OBS', 'MANGLER')}")
+                    self.log_tle_message(f"LAT-OBS/LAT--OBS: {sample_row.get('LAT-OBS', sample_row.get('LAT--OBS', 'MANGLER'))}")
+                import traceback
+                self.log_tle_message(f"Detaljeret fejl:\n{traceback.format_exc()}")
+                return
+            
+            satellite_positions = np.array(sat_pos)
+            observation_points = np.array(obs_points)
+            
+            # Beregn relative positioner
+            x_list = satellite_positions[:, 0] - observation_points[:, 0]
+            y_list = satellite_positions[:, 1] - observation_points[:, 1]
+            z_list = satellite_positions[:, 2] - observation_points[:, 2]
+            
+            # Konverter til RA/DEC
+            self.log_tle_message("Konverterer til RA/DEC koordinater...")
+            ra_tle = []
+            dec_tle = []
+            for i in range(len(x_list)):
+                ra, dec = self.xyz_to_radec(x_list[i], y_list[i], z_list[i])
+                ra_tle.append(ra)
+                dec_tle.append(dec)
+            
+            ra_tle = np.array(ra_tle)
+            dec_tle = np.array(dec_tle)
+            
+            # Hent observerede positioner
+            try:
+                sat_ra_behandlet = results_df['Sat_RA_Behandlet'].values
+                sat_dec_behandlet = results_df['Sat_DEC_Behandlet'].values
+                sat_ra_teleskop = results_df['RA_J2000'].values * 15  # Konverter fra timer til grader
+                sat_dec_teleskop = results_df['DEC_TEL'].values
+            except KeyError as e:
+                self.log_tle_message(f"❌ Manglende kolonne: {str(e)}")
+                self.log_tle_message("Tjek at CSV-filen indeholder alle nødvendige kolonner")
+                return
+            
+            # Beregn afvigelser
+            self.log_tle_message("Beregner afvigelser...")
+            delta_ra_teleskop = self.angle_diff_deg(sat_ra_teleskop, ra_tle)
+            delta_dec_teleskop = self.angle_diff_deg(sat_dec_teleskop, dec_tle)
+            delta_ra_behandlet = self.angle_diff_deg(sat_ra_behandlet, ra_tle)
+            delta_dec_behandlet = self.angle_diff_deg(sat_dec_behandlet, dec_tle)
+            
+            # Beregn tid i sekunder efter første måling
+            if 'JD' in results_df.columns:
+                jd_first = results_df["JD"].iloc[0]
+                seconds_after_first_measurement = (results_df["JD"] - jd_first) * 86400
+            else:
+                # Beregn tid fra DATE-OBS kolonnen
+                times_dt = pd.to_datetime(results_df['DATE-OBS'])
+                first_time = times_dt.iloc[0]
+                seconds_after_first_measurement = (times_dt - first_time).dt.total_seconds()
+            
+            # Gem data
+            self.tle_calculation_data = {
+                'seconds': seconds_after_first_measurement,
+                'delta_ra_behandlet': delta_ra_behandlet,
+                'delta_dec_behandlet': delta_dec_behandlet,
+                'delta_ra_teleskop': delta_ra_teleskop,
+                'delta_dec_teleskop': delta_dec_teleskop,
+                'sat_pos_tle_original': satellite_positions
+            }
+            
+            self.log_tle_message(f"✅ Beregnet afvigelser for {len(delta_ra_behandlet)} datapunkter")
+            
+            # Opdater plot
+            self.log_tle_message("Opdaterer plot...")
+            self.update_tle_plot()
+            
+        except Exception as e:
+            error_msg = f"Fejl ved beregning af TLE afvigelser: {str(e)}"
+            self.log_tle_message(f"❌ {error_msg}")
+            messagebox.showerror("Fejl", error_msg)
+            import traceback
+            print(traceback.format_exc())
+    
+    def update_tle_plot(self):
+        """Opdater TLE afvigelsesplot"""
+        try:
+            if self.tle_calculation_data is None:
+                return
+            
+            # Hent data
+            seconds = self.tle_calculation_data['seconds']
+            delta_ra_behandlet = self.tle_calculation_data['delta_ra_behandlet']
+            delta_dec_behandlet = self.tle_calculation_data['delta_dec_behandlet']
+            delta_ra_teleskop = self.tle_calculation_data['delta_ra_teleskop']
+            delta_dec_teleskop = self.tle_calculation_data['delta_dec_teleskop']
+            
+            # Ryd tidligere plot
+            for ax in self.tle_plot_axes:
+                ax.clear()
+            
+            # RA-afvigelser (øverste subplot) - plot against indices
+            indices = list(range(len(seconds)))
+            self.tle_plot_axes[0].plot(indices, delta_ra_behandlet, label='Satelittens ΔRA', 
+                                      marker='o', linestyle='', color='blue')
+            self.tle_plot_axes[0].plot(indices, delta_ra_teleskop, label='Teleskopets ΔRA', 
+                                      marker='o', linestyle='', color='orange', fillstyle='none')
+            
+            # Set up the top axis to show exactly 4 evenly spaced times
+            ax_top = self.tle_plot_axes[0].twiny()
+            ax_top.set_xlim(self.tle_plot_axes[0].get_xlim())
+            
+            # Create 4 evenly spaced tick positions
+            n_obs = len(indices)
+            if n_obs >= 4:
+                time_tick_indices = [0, n_obs//3, 2*n_obs//3, n_obs-1]
+            else:
+                time_tick_indices = list(range(n_obs))
+            
+            time_ticks = time_tick_indices
+            time_labels = [f'{seconds.iloc[i]:.0f}' for i in time_tick_indices]
+            
+            ax_top.set_xticks(time_ticks)
+            ax_top.set_xticklabels(time_labels)
+            ax_top.set_xlabel('Seconds after first observation')
+
+
+            
+            # Forbind punkterne med stiplede linjer
+            for i in range(len(seconds)):
+                self.tle_plot_axes[0].plot([i, i], 
+                                          [delta_ra_behandlet[i], delta_ra_teleskop[i]], 
+                                          'k--', alpha=0.3, linewidth=0.8)
+            
+            self.tle_plot_axes[0].set_xlabel('Observation Index')
+            self.tle_plot_axes[0].set_ylabel('Afvigelse (grader)')
+            self.tle_plot_axes[0].set_title('ΔRA: Observeret - TLE')
+            self.tle_plot_axes[0].legend()
+            self.tle_plot_axes[0].grid(True, alpha=0.3)
+            
+            # DEC-afvigelser (nederste subplot)
+            self.tle_plot_axes[1].plot(indices, delta_dec_behandlet, label='Satelittens ΔDEC', 
+                                      marker='o', linestyle='', color='blue')
+            self.tle_plot_axes[1].plot(indices, delta_dec_teleskop, label='Teleskopets ΔDEC', 
+                                      marker='o', linestyle='', color='orange', fillstyle='none')
+            
+            # Forbind punkterne med stiplede linjer
+            for i in range(len(seconds)):
+                self.tle_plot_axes[1].plot([i, i], 
+                                          [delta_dec_behandlet[i], delta_dec_teleskop[i]], 
+                                          'k--', alpha=0.3, linewidth=0.8)
+            
+            self.tle_plot_axes[1].set_xlabel('Observation Index')
+            self.tle_plot_axes[1].set_ylabel('Afvigelse (grader)')
+            self.tle_plot_axes[1].set_title('ΔDEC: Observeret - TLE')
+            self.tle_plot_axes[1].legend()
+            self.tle_plot_axes[1].grid(True, alpha=0.3)
+            
+            # Set up the top axis for DEC plot with the same 4 evenly spaced times
+            ax_top_dec = self.tle_plot_axes[1].twiny()
+            ax_top_dec.set_xlim(self.tle_plot_axes[1].get_xlim())
+            
+            # Use the same time ticks as the RA plot
+            ax_top_dec.set_xticks(time_ticks)
+            ax_top_dec.set_xticklabels(time_labels)
+            ax_top_dec.set_xlabel('Seconds after first observation')
+            
+            # Opdater figure
+            self.tle_plot_figure.tight_layout(rect=[0, 0.03, 1, 0.95])
+            self.tle_canvas.draw()
+            
+            self.log_tle_message("✅ Plot opdateret succesfuldt")
+            
+        except Exception as e:
+            error_msg = f"Fejl ved opdatering af plot: {str(e)}"
+            self.log_tle_message(f"❌ {error_msg}")
+            print(error_msg)
+            import traceback
+            print(traceback.format_exc())
+    
+    # =================
+    # TLE BEREGNINGS FUNKTIONER (fra notebook)
+    # =================
+    
+    def double_R(self, times, meas, positions, satid=99999):
+        """Double-R IOD metode"""
+        arc_optical = ArcObs({'t': times, 'radec': meas, 'xyz_site': positions})
+        arc_optical.lowess_smooth()
+        
+        earth = Body.from_name('Earth')
+        arc_iod = arc_optical.iod(earth)
+        arc_iod.doubleR(ellipse_only=False)
+        self.log_tle_message(f"Double-R resultater:\n{arc_iod.df.to_string()}")
+        
+        result = arc_iod.df.iloc[0]
+        
+        ele0_dict = {
+            'epoch': times[len(times)//2],
+            'a': result['a'] / 6378.135,
+            'ecc': result['ecc'],
+            'inc': result['inc'],
+            'raan': result['raan'],
+            'argp': result['argp'],
+            'M': result['M']
+        }
+        
+        ta0, ele0, params = arc_optical._tle_generate(
+            ele0_dict, satid, 
+            reff='GCRF',
+            bstar=0.0,
+            classification='U',
+            intldesg='00000A'
+        )
+        
+        mu = 398600.4418
+        coe = np.array([result['a']*6378.135, result['ecc'], result['inc'], 
+                        result['raan'], result['argp'], result['nu']])
+        rv = KeprvTrans.coe2rv(coe, mu)
+        r = rv[0:3]
+        v = rv[3:6]
+        
+        return (r, v, coe, (ta0, ele0, params))
+    
+    def multilaplace(self, times, meas, positions, satid=99999):
+        """Multi-Laplace IOD metode"""
+        arc_optical = ArcObs({'t': times, 'radec': meas, 'xyz_site': positions})
+        arc_optical.lowess_smooth()
+        
+        earth = Body.from_name('Earth')
+        arc_iod = arc_optical.iod(earth)
+        arc_iod.multilaplace(ellipse_only=False)
+        self.log_tle_message(f"Multi-Laplace resultater:\n{arc_iod.df.to_string()}")
+        
+        result = arc_iod.df.iloc[0]
+        
+        ele0_dict = {
+            'epoch': times[len(times)//2],
+            'a': result['a'] / 6378.135,
+            'ecc': result['ecc'],
+            'inc': result['inc'],
+            'raan': result['raan'],
+            'argp': result['argp'],
+            'M': result['M']
+        }
+        
+        ta0, ele0, params = arc_optical._tle_generate(
+            ele0_dict, satid, 
+            reff='GCRF',
+            bstar=0.0,
+            classification='U',
+            intldesg='00000A'
+        )
+        
+        mu = 398600.4418
+        coe = np.array([result['a']*6378.135, result['ecc'], result['inc'], 
+                        result['raan'], result['argp'], result['nu']])
+        rv = KeprvTrans.coe2rv(coe, mu)
+        r = rv[0:3]
+        v = rv[3:6]
+        
+        return (r, v, coe, (ta0, ele0, params))
+    
+    def laplace(self, times, meas, positions, satid=99999):
+        """Laplace IOD metode"""
+        arc_optical = ArcObs({'t': times, 'radec': meas, 'xyz_site': positions})
+        arc_optical.lowess_smooth()
+        
+        earth = Body.from_name('Earth')
+        arc_iod = arc_optical.iod(earth)
+        arc_iod.laplace(ellipse_only=False)
+        self.log_tle_message(f"Laplace resultater:\n{arc_iod.df.to_string()}")
+        
+        result = arc_iod.df.iloc[0]
+        
+        ele0_dict = {
+            'epoch': times[len(times)//2],
+            'a': result['a'] / 6378.135,
+            'ecc': result['ecc'],
+            'inc': result['inc'],
+            'raan': result['raan'],
+            'argp': result['argp'],
+            'M': result['M']
+        }
+        
+        ta0, ele0, params = arc_optical._tle_generate(
+            ele0_dict, satid, 
+            reff='GCRF',
+            bstar=0.0,
+            classification='U',
+            intldesg='00000A'
+        )
+        
+        mu = 398600.4418
+        coe = np.array([result['a']*6378.135, result['ecc'], result['inc'], 
+                        result['raan'], result['argp'], result['nu']])
+        rv = KeprvTrans.coe2rv(coe, mu)
+        r = rv[0:3]
+        v = rv[3:6]
+        
+        return (r, v, coe, (ta0, ele0, params))
+    
+    def gauss(self, times, meas, positions, satid=99999):
+        """Gauss IOD metode"""
+        arc_optical = ArcObs({'t': times, 'radec': meas, 'xyz_site': positions})
+        arc_optical.lowess_smooth()
+        
+        earth = Body.from_name('Earth')
+        arc_iod = arc_optical.iod(earth)
+        arc_iod.gauss(ellipse_only=False)
+        self.log_tle_message(f"Gauss resultater:\n{arc_iod.df.to_string()}")
+        
+        result = arc_iod.df.iloc[0]
+        
+        ele0_dict = {
+            'epoch': times[len(times)//2],
+            'a': result['a'] / 6378.135,
+            'ecc': result['ecc'],
+            'inc': result['inc'],
+            'raan': result['raan'],
+            'argp': result['argp'],
+            'M': result['M']
+        }
+        
+        ta0, ele0, params = arc_optical._tle_generate(
+            ele0_dict, satid, 
+            reff='GCRF',
+            bstar=0.0,
+            classification='U',
+            intldesg='00000A'
+        )
+        
+        mu = 398600.4418
+        coe = np.array([result['a']*6378.135, result['ecc'], result['inc'], 
+                        result['raan'], result['argp'], result['nu']])
+        rv = KeprvTrans.coe2rv(coe, mu)
+        r = rv[0:3]
+        v = rv[3:6]
+        
+        return (r, v, coe, (ta0, ele0, params))
+    
+    def circular(self, times, meas, positions, satid=99999):
+        """Circular orbit IOD metode"""
+        arc_optical = ArcObs({'t': times, 'radec': meas, 'xyz_site': positions})
+        arc_optical.lowess_smooth()
+        
+        earth = Body.from_name('Earth')
+        arc_iod = arc_optical.iod(earth)
+        arc_iod.circular(ellipse_only=False)
+        self.log_tle_message(f"Circular resultater:\n{arc_iod.df.to_string()}")
+        
+        result = arc_iod.df.iloc[0]
+        
+        ele0_dict = {
+            'epoch': times[len(times)//2],
+            'a': result['a'] / 6378.135,
+            'ecc': result['ecc'],
+            'inc': result['inc'],
+            'raan': result['raan'],
+            'argp': result['argp'],
+            'M': result['M']
+        }
+        
+        ta0, ele0, params = arc_optical._tle_generate(
+            ele0_dict, satid, 
+            reff='GCRF',
+            bstar=0.0,
+            classification='U',
+            intldesg='00000A'
+        )
+        
+        mu = 398600.4418
+        coe = np.array([result['a']*6378.135, result['ecc'], result['inc'], 
+                        result['raan'], result['argp'], result['nu']])
+        rv = KeprvTrans.coe2rv(coe, mu)
+        r = rv[0:3]
+        v = rv[3:6]
+        
+        return (r, v, coe, (ta0, ele0, params))
+    
+    def gooding(self, times, meas, positions, satid=99999):
+        """Gooding IOD metode"""
+        arc_optical = ArcObs({'t': times, 'radec': meas, 'xyz_site': positions})
+        arc_optical.lowess_smooth()
+        
+        earth = Body.from_name('Earth')
+        arc_iod = arc_optical.iod(earth)
+        arc_iod.gooding(ellipse_only=False)
+        self.log_tle_message(f"Gooding resultater:\n{arc_iod.df.to_string()}")
+        
+        result = arc_iod.df.iloc[0]
+        
+        ele0_dict = {
+            'epoch': times[len(times)//2],
+            'a': result['a'] / 6378.135,
+            'ecc': result['ecc'],
+            'inc': result['inc'],
+            'raan': result['raan'],
+            'argp': result['argp'],
+            'M': result['M']
+        }
+        
+        ta0, ele0, params = arc_optical._tle_generate(
+            ele0_dict, satid, 
+            reff='GCRF',
+            bstar=0.0,
+            classification='U',
+            intldesg='00000A'
+        )
+        
+        mu = 398600.4418
+        coe = np.array([result['a']*6378.135, result['ecc'], result['inc'], 
+                        result['raan'], result['argp'], result['nu']])
+        rv = KeprvTrans.coe2rv(coe, mu)
+        r = rv[0:3]
+        v = rv[3:6]
+        
+        return (r, v, coe, (ta0, ele0, params))
+
+    def parse_compact_tle_notation(self, s):
+        """Parse kompakt TLE notation som '34500-3' -> float"""
+        if s is None or s.strip() in ['', '00000-0']:
+            return 0.0
+        s = s.strip()
+        m = re.match(r'^([+-]?)(\d{5})([+-])(\d+)$', s)
+        if not m:
+            raise ValueError(f"Uventet kompakt TLE-format: {s!r}")
+        sign_mant, mantissa_str, sign_exp, exp_str = m.groups()
+        mantissa = int(mantissa_str) / 1e5
+        exp = int(exp_str) if sign_exp == '+' else -int(exp_str)
+        value = mantissa * (10 ** exp)
+        if sign_mant == '-':
+            value = -value
+        return value
+
+    def _compact_tle_notation(self, value):
+        """Konverter float til TLE kompakt notation som '34500-3'"""
+        if abs(value) < 5e-12:
+            return "00000-0"
+        s = f"{value:.5e}"
+        mant_str, exp_str = s.split('e')
+        mant = abs(float(mant_str))
+        exp = int(exp_str)
+        mantissa_int = int(round(mant * 1e5))
+        if mantissa_int >= 100000:
+            mantissa_int //= 10
+            exp += 1
+        sign_exp = '-' if exp < 0 else '+'
+        exp_abs = abs(exp)
+        sign_prefix = '-' if value < 0 else ''
+        return f"{sign_prefix}{mantissa_int:05d}{sign_exp}{exp_abs}"
+
+    def format_first_derivative(self, value):
+        """Formatter mean motion dot til TLE: fx .00000186"""
+        s = f"{value:.8f}"
+        if s.startswith("0"):
+            s = s[1:]
+        return s
+
+    def format_tle(self, ta0, ele0, params, a):
+        """Konverter orbdtools TLE data til standard TLE format (2 linjer)"""
+        satid, reff, bstar, nddot, classification, intldesg, elnum, revnum = params
+        n, ecc, inc, raan, argp, M = ele0
+
+        # Epoch
+        epoch_year = ta0.datetime.year % 100
+        day_of_year = int(ta0.yday.split(':')[1])
+        hour = ta0.datetime.hour
+        minute = ta0.datetime.minute
+        second = ta0.datetime.second + ta0.datetime.microsecond / 1e6
+        frac = (hour + minute/60 + second/3600) / 24.0
+        frac_str = f"{frac:.8f}"
+        if frac_str.startswith("0"):
+            frac_str = frac_str[1:]
+        epoch_str = f"{epoch_year:02d}{day_of_year:03d}{frac_str}"
+        if len(epoch_str) != 14:
+            raise ValueError(f"Forkert epoch-længde: {epoch_str!r} (len={len(epoch_str)})")
+
+        # Beregn mean motion fra a hvis nødvendigt
+        GM = 3.986004415e5
+        a_km = a
+        n_rad = np.sqrt(GM / a_km**3)
+        n_revperday = (n_rad / (2 * np.pi)) * 86400.0
+
+        # Hent originale TLE-værdier hvis DataFrame findes
+        df = getattr(self, "tle_csv_data", None)
+        if df is not None and 'TLE1' in df.columns:
+            original_tle1 = str(df['TLE1'].iloc[0])
+
+            # Hent international designator (kolonne 10–17, 0-index 9:17)
+            intldesg = original_tle1[9:17].strip()
+
+            # Hent elementnummer (kolonne 65–68, 0-index 64:68)
+            orig_elnum_str = original_tle1[64:68].strip()
+            if orig_elnum_str.isdigit():
+                orig_elnum = int(orig_elnum_str)
+                # Læg +1 til hvis det ikke er 999
+                elnum = orig_elnum + 1 if orig_elnum != 999 else 999
+            else:
+                elnum = int(elnum)
+
+            # First derivative: kolonne 34–43, python slice 33:43
+            try:
+                first_deriv_str = original_tle1[33:43]
+                mean_motion_dot = float(first_deriv_str.strip())
+            except:
+                mean_motion_dot = 0.0
+
+            # Second derivative (ddot) kompakt notation: 45–52, slice 44:52
+            try:
+                ddot_field = original_tle1[44:52]
+                nddot = self.parse_compact_tle_notation(ddot_field)
+            except:
+                nddot = 0.0
+
+            # BSTAR kompakt notation: 54–61, slice 53:61
+            try:
+                bstar_field = original_tle1[53:61]
+                bstar = self.parse_compact_tle_notation(bstar_field)
+            except:
+                bstar = 0.0
+
+        # Formatter first derivative
+        mean_motion_dot_str = self.format_first_derivative(mean_motion_dot)
+
+        # Formatter ddot og bstar til kompakt notation
+        ddot_str = self._compact_tle_notation(nddot)
+        bstar_str = self._compact_tle_notation(bstar)
+
+        # Line 1
+        line1_data = (
+            f"1 {satid:5d}{classification}"
+            f" {intldesg:8s} "
+            f"{epoch_str:14s} "
+            f" {mean_motion_dot_str}"
+            f" {ddot_str:8s}"
+            f" {bstar_str:8s}"
+            f" 0 {int(elnum):4d}"  # elementnummer altid 4 tegn
+        )
+        checksum1 = self.calculate_tle_checksum(line1_data)
+        line1 = line1_data[:68] + str(checksum1)  # placer checksum i kolonne 69
+
+        # Line 2
+        ecc_str = f"{int(round(ecc * 1e7)):07d}"
+        line2_data = (
+            f"2 {satid:5d} "
+            f"{inc:8.4f} "
+            f"{raan:8.4f} "
+            f"{ecc_str} "
+            f"{argp:8.4f} "
+            f"{M:8.4f} "
+            f"{n_revperday:11.8f}"
+            f"{int(revnum):5d}"
+        )
+        checksum2 = self.calculate_tle_checksum(line2_data)
+        line2 = f"{line2_data}{checksum2}"
+
+        return line1, line2
+    
+    def calculate_tle_checksum(self, line):
+        """Beregn TLE checksum (modulo 10 sum af cifre, hvor - tæller som 1)"""
+        checksum = 0
+        for char in line:
+            if char.isdigit():
+                checksum += int(char)
+            elif char == '-':
+                checksum += 1
+        return checksum % 10
+    
+    def beregn_TLE_fra_observationer(self, Sat_RA, Sat_DEC, X_obs, Y_obs, Z_obs, DATE_OBS, NoradID, metode, index_list=None):
+
+        """Hovedfunktion til at beregne TLE fra observationer ved hjælp af forskellige IOD metoder"""
+        if not ORBDTOOLS_AVAILABLE:
+            self.log_tle_message("❌ FEJL: orbdtools ikke tilgængelig!")
+            messagebox.showerror("Fejl", "orbdtools biblioteket er ikke installeret.\n\nInstaller med: pip install orbdtools")
+            return None
+        
+        metode_funktioner = {
+            'double_R': self.double_R,
+            'multilaplace': self.multilaplace,
+            'laplace': self.laplace,
+            'gauss': self.gauss,
+            'circular': self.circular,
+            'gooding': self.gooding
+        }
+        
+        if metode not in metode_funktioner:
+            raise ValueError(f"Ukendt metode '{metode}'. Tilgængelige metoder: {list(metode_funktioner.keys())}")
+        
+        # Konverter input til numpy arrays
+        Sat_RA = np.array(Sat_RA)
+        Sat_DEC = np.array(Sat_DEC)
+        X_obs = np.array(X_obs)
+        Y_obs = np.array(Y_obs)
+        Z_obs = np.array(Z_obs)
+        
+        if not isinstance(DATE_OBS, pd.Series):
+            DATE_OBS = pd.to_datetime(DATE_OBS)
+        
+        angles = np.array([Sat_RA, Sat_DEC]).T
+        positions = np.array([X_obs, Y_obs, Z_obs]).T
+        
+        if index_list is None:
+            n = len(DATE_OBS)
+            middle_idx = n // 2
+            index_list = [0, middle_idx, n-1]
+        
+        # Tjek om vi bruger gooding metoden (kan håndtere alle datapunkter)
+        if metode == 'gooding':
+            # Gooding metoden: brug alle datapunkter
+            self.log_tle_message(f"Bruger metode: {metode} (alle {len(DATE_OBS)} datapunkter)")
+            
+            if isinstance(DATE_OBS, pd.Series):
+                tider_pandas = DATE_OBS.values
+            else:
+                tider_pandas = np.array(DATE_OBS)
+            
+            tider = Time(tider_pandas)
+            r_ = positions
+            angles_ = angles
+        else:
+            # Andre metoder: brug kun de 3 valgte indices
+            if len(index_list) != 3:
+                raise ValueError(f"index_list skal indeholde præcis 3 indices, fik {len(index_list)}")
+            
+            idx = index_list
+            self.log_tle_message(f"Bruger metode: {metode} (indices: {idx})")
+            
+            if isinstance(DATE_OBS, pd.Series):
+                tider_pandas = np.array([DATE_OBS.iloc[idx[0]], DATE_OBS.iloc[idx[1]], DATE_OBS.iloc[idx[2]]])
+            else:
+                tider_pandas = np.array([DATE_OBS[idx[0]], DATE_OBS[idx[1]], DATE_OBS[idx[2]]])
+            
+            tider = Time(tider_pandas)
+            r_ = np.array([positions[idx[0]], positions[idx[1]], positions[idx[2]]])
+            angles_ = np.array([angles[idx[0]], angles[idx[1]], angles[idx[2]]])
+        
+        metode_funktion = metode_funktioner[metode]
+        R, v, coe, tle_data = metode_funktion(tider, angles_, r_, satid=NoradID)
+        
+        ta0, ele0, params = tle_data
+        line1, line2 = self.format_tle(ta0, ele0, params, coe[0])
+        
+        return {
+            'r': R,
+            'v': v, 
+            'coe': coe,
+            'tle': tle_data,
+            'tle_lines': (line1, line2),
+            'method': metode
+        }
+    
+    def log_tle_message(self, message):
+        """Tilføj besked til TLE loggen med tidsstempel"""
+        try:
+            if hasattr(self, 'tle_log_text'):
+                timestamp = datetime.now().strftime('%H:%M:%S')
+                log_entry = f"[{timestamp}] {message}\n"
+                self.tle_log_text.insert(tk.END, log_entry)
+                self.tle_log_text.see(tk.END)  # Scroll til bunden
+                self.root.update_idletasks()  # Opdater GUI
+        except Exception as e:
+            print(f"Log fejl: {e}")
+    
+    def calculate_tle_from_observations(self):
+        """Beregner TLE baseret på valgte parametre"""
+        try:
+            # Tjek om data er indlæst
+            if self.tle_csv_data is None:
+                messagebox.showwarning("Ingen data", "Indlæs først en CSV-fil med observationsdata")
+                self.log_tle_message("❌ Ingen data indlæst")
+                return
+            
+            # Hent valgte indices
+            try:
+                idx1 = int(self.index1_combo.get())
+                idx2 = int(self.index2_combo.get())
+                idx3 = int(self.index3_combo.get())
+                index_list = [idx1, idx2, idx3]
+            except:
+                messagebox.showerror("Fejl", "Vælg 3 gyldige indices")
+                self.log_tle_message("❌ Ugyldige indices valgt")
+                return
+            
+            # Validér at indices er forskellige
+            if len(set(index_list)) != 3:
+                messagebox.showerror("Fejl", "Vælg 3 forskellige indices")
+                self.log_tle_message("❌ Indices skal være forskellige")
+                return
+            
+            # Hent valgt metode
+            metode = self.tle_method_combo.get()
+            
+            self.log_tle_message(f"Starter TLE beregning...")
+            self.log_tle_message(f"Metode: {metode}")
+            self.log_tle_message(f"Indices: {index_list}")
+            
+            # Hent data fra CSV
+            df = self.tle_csv_data
+            
+            # Ekstraher nødvendige kolonner
+            Sat_RA = df['Sat_RA_Behandlet'].values
+            Sat_DEC = df['Sat_DEC_Behandlet'].values
+            X_obs = df['X_obs'].values
+            Y_obs = df['Y_obs'].values
+            Z_obs = df['Z_obs'].values
+            DATE_OBS = pd.to_datetime(df['DATE-OBS'])
+            NoradID = int(df['NORAD_ID'].iloc[0]) if 'NORAD_ID' in df.columns else 99999
+            
+            self.log_tle_message(f"NORAD ID: {NoradID}")
+            
+            # Kald beregningsfunktionen
+            result = self.beregn_TLE_fra_observationer(
+                Sat_RA=Sat_RA,
+                Sat_DEC=Sat_DEC,
+                X_obs=X_obs,
+                Y_obs=Y_obs,
+                Z_obs=Z_obs,
+                DATE_OBS=DATE_OBS,
+                NoradID=NoradID,
+                metode=metode,
+                index_list=index_list
+            )
+            
+            if result is None:
+                self.log_tle_message("❌ TLE beregning fejlede")
+                return
+            
+            # Gem resultat
+            self.tle_result = result
+
+            self.save_tle_results()
+            
+            # Vis TLE linjer
+            line1, line2 = result['tle_lines']
+            self.tle_line1_text.delete(1.0, tk.END)
+            self.tle_line1_text.insert(1.0, line1)
+            self.tle_line2_text.delete(1.0, tk.END)
+            self.tle_line2_text.insert(1.0, line2)
+            
+            self.log_tle_message("✅ TLE genereret:")
+            self.log_tle_message(f"{line1}")
+            self.log_tle_message(f"{line2}")
+            
+            # Vis orbital elementer
+            coe = result['coe']
+            r = result['r']
+            v = result['v']
+            
+            orbital_text = f"Position (r) [km]:\n"
+            orbital_text += f"  x: {r[0]:.3f}\n"
+            orbital_text += f"  y: {r[1]:.3f}\n"
+            orbital_text += f"  z: {r[2]:.3f}\n\n"
+            
+            orbital_text += f"Hastighed (v) [km/s]:\n"
+            orbital_text += f"  vx: {v[0]:.6f}\n"
+            orbital_text += f"  vy: {v[1]:.6f}\n"
+            orbital_text += f"  vz: {v[2]:.6f}\n\n"
+            
+            orbital_text += f"Classical Orbital Elements:\n"
+            orbital_text += f"  a (semi-major axis): {coe[0]:.3f} [km]\n"
+            orbital_text += f"  e (eccentricity): {coe[1]:.6f}\n"
+            orbital_text += f"  i (inclination): {coe[2]:.4f}°\n"
+            orbital_text += f"  Ω (RAAN): {coe[3]:.4f}°\n"
+            orbital_text += f"  ω (arg of perigee): {coe[4]:.4f}°\n"
+            orbital_text += f"  ν (true anomaly): {coe[5]:.4f}°"
+            
+            self.orbital_elements_text.delete(1.0, tk.END)
+            self.orbital_elements_text.insert(1.0, orbital_text)
+            
+            self.log_tle_message(f"✅ Orbital elementer beregnet")
+            
+            # Tilføj beregnede TLE linjer til DataFrame og beregn afvigelser
+            if self.tle_csv_data is not None:
+                self.log_tle_message("Tilføjer TLE linjer til data og beregner afvigelser...")
+                df_updated = self.tle_csv_data.copy()
+                df_updated['TLE1_beregnet'] = line1
+                df_updated['TLE2_beregnet'] = line2
+                self.tle_csv_data = df_updated  # Opdater den gemte data
+                self.calculate_tle_deviations(df_updated)
+            
+            messagebox.showinfo("Succes", f"TLE beregnet succesfuldt med {metode} metoden!")
+            
+        except Exception as e:
+            error_msg = f"Fejl ved TLE beregning: {str(e)}"
+            self.log_tle_message(f"❌ {error_msg}")
+            messagebox.showerror("Fejl", error_msg)
+            import traceback
+            print(traceback.format_exc())
+    
+    def show_tle_3d_plot(self):
+        """Viser 3D plot af beregnet TLE"""
+        try:
+            if self.tle_result is None:
+                messagebox.showwarning("Ingen resultat", "Beregn først en TLE")
+                return
+            
+            if not PLOTLY_AVAILABLE:
+                messagebox.showerror("Fejl", "Plotly ikke tilgængelig")
+                return
+            
+            self.log_tle_message(" Genererer 3D plot...")
+            
+            # Opret 3D plot (lignende til LeapFrog plot)
+            earth_radius = 6371
+            u, v = np.mgrid[0:2*np.pi:100j, 0:np.pi:50j]
+            x = earth_radius * np.cos(u) * np.sin(v)
+            y = earth_radius * np.sin(u) * np.sin(v)
+            z = earth_radius * np.cos(v)
+            
+            fig = go.Figure()
+            
+            # Tilføj Jorden
+            fig.add_trace(go.Surface(
+                x=x, y=y, z=z,
+                colorscale='Blues',
+                opacity=0.5,
+                showscale=False,
+                name='Jorden'
+            ))
+            
+            # Beregn satellit bane fra TLE
+            satellite = None  # Initialize satellite variable
+            ts_times = None  # Initialize ts_times for reuse
+
+            # Hent data
+            df = self.tle_csv_data
+            
+            if SKYFIELD_AVAILABLE:
+                ts = load.timescale()
+                
+                # Hent beregnet TLE fra DataFrame
+                if 'Calculated_TLE_Line1' in df.columns and 'Calculated_TLE_Line2' in df.columns:
+                    line1 = df['Calculated_TLE_Line1'].iloc[0]
+                    line2 = df['Calculated_TLE_Line2'].iloc[0]
+                    
+                    self.log_tle_message(f"TLE Linjer fra DataFrame:\n{line1}\n{line2}")
+                    
+                else:
+                    self.log_tle_message("Calculated_TLE_Line1/Calculated_TLE_Line2 kolonner ikke fundet i CSV")
+                    # Fallback til self.tle_result hvis DataFrame kolonner ikke findes
+                    if self.tle_result and 'tle_lines' in self.tle_result:
+                        line1, line2 = self.tle_result['tle_lines']
+                        self.log_tle_message(f"Fallback til TLE fra tle_result:\n{line1}\n{line2}")
+                    else:
+                        line1, line2 = None, None
+                        self.log_tle_message("❌ Ingen TLE data tilgængelig")
+                
+                # Validér beregnet TLE data
+                if line1 and line2:
+                    self.log_tle_message("Opretter satellit fra beregnet TLE...")
+                    
+                    try:
+                        satellite = EarthSatellite(line1, line2, 'Beregnet TLE', ts)
+                        self.log_tle_message("✅ Beregnet TLE satellit oprettet succesfuldt")
+                    except Exception as e:
+                        self.log_tle_message(f"❌ Kunne ikke oprette satellit fra beregnet TLE: {str(e)}")
+                        satellite = None
+                else:
+                    self.log_tle_message("❌ Beregnet TLE data mangler eller er tom")
+                    satellite = None
+                
+                if satellite is not None:
+                    # Brug tidspunkter fra data
+                    times = pd.to_datetime(df['DATE-OBS'])
+                    t_center = times.iloc[len(times)//2]
+                    
+                    # Generer tider +/- 45 min
+                    time_range = [t_center + pd.Timedelta(seconds=delta) for delta in np.arange(-45*60, 45*60 + 5, 5)]
+                    
+                    # Konverter til Skyfield format
+                    years = [t.year for t in time_range]
+                    months = [t.month for t in time_range]
+                    days = [t.day for t in time_range]
+                    hours = [t.hour for t in time_range]
+                    minutes = [t.minute for t in time_range]
+                    seconds = [t.second + t.microsecond/1e6 for t in time_range]
+                    
+                    ts_times = ts.utc(years, months, days, hours, minutes, seconds)
+                    
+                    # Beregn positioner
+                    tle_positions = satellite.at(ts_times).position.km.T
+                    
+                    # Plot bane
+                    fig.add_trace(go.Scatter3d(
+                        x=tle_positions[:, 0],
+                        y=tle_positions[:, 1],
+                        z=tle_positions[:, 2],
+                        mode='lines',
+                        name=f'Beregnet TLE ({self.tle_result["method"]})',
+                        line=dict(width=3, color='red')
+                    ))
+                
+                    # Plot original TLE hvis tilgængelig og vi har gyldige tidsintervaller
+                    if 'TLE1' in df.columns and 'TLE2' in df.columns and 'ts_times' in locals():
+                        original_tle1 = df['TLE1'].iloc[0]
+                        original_tle2 = df['TLE2'].iloc[0]
+                        
+                        if pd.notna(original_tle1) and pd.notna(original_tle2) and original_tle1.strip() and original_tle2.strip():
+                            self.log_tle_message("Plotter original TLE...")
+                            
+                            try:
+                                original_satellite = EarthSatellite(original_tle1, original_tle2, 'Original TLE', ts)
+                                
+                                # Beregn positioner for original TLE (samme tidsinterval)
+                                original_tle_positions = original_satellite.at(ts_times).position.km.T
+                            
+                                
+                                # Plot original bane
+                                fig.add_trace(go.Scatter3d(
+                                    x=original_tle_positions[:, 0],
+                                    y=original_tle_positions[:, 1],
+                                    z=original_tle_positions[:, 2],
+                                    mode='lines',
+                                    name='Original TLE',
+                                    line=dict(width=3, color='blue', dash='dot')
+                                ))
+                                
+                                self.log_tle_message("✅ Original TLE tilføjet til plot")
+                                
+                            except Exception as e:
+                                self.log_tle_message(f"⚠️ Kunne ikke plotte original TLE: {str(e)}")
+                        else:
+                            self.log_tle_message("⚠️ Original TLE data mangler eller er tom")
+                    else:
+                        self.log_tle_message("⚠️ TLE1/TLE2 kolonner ikke fundet i CSV eller ingen tidsinterval")
+                else:
+                    self.log_tle_message("⚠️ Kunne ikke oprette beregnet TLE satellit")
+                    
+            else:
+                self.log_tle_message("⚠️ Skyfield ikke tilgængelig, kan ikke vise beregnet bane fra TLE")
+            
+            # Beregn satellitpositioner baseret på RA/DEC fra CSV og distance fra TLE
+            if satellite is not None and 'Sat_RA_Behandlet' in df.columns and 'Sat_DEC_Behandlet' in df.columns:
+                self.log_tle_message(" Beregner satellitpositioner fra RA/DEC og TLE distance...")
+                
+                # Hent RA/DEC fra CSV
+                sat_ra_behandlet = df['Sat_RA_Behandlet'].values  # grader
+                sat_dec_behandlet = df['Sat_DEC_Behandlet'].values  # grader
+                obs_times = pd.to_datetime(df['DATE-OBS'])
+                
+                # Konverter observationstider til Skyfield format
+                obs_years = [t.year for t in obs_times]
+                obs_months = [t.month for t in obs_times]
+                obs_days = [t.day for t in obs_times]
+                obs_hours = [t.hour for t in obs_times]
+                obs_minutes = [t.minute for t in obs_times]
+                obs_seconds = [t.second + t.microsecond/1e6 for t in obs_times]
+                
+                ts_obs_times = ts.utc(obs_years, obs_months, obs_days, obs_hours, obs_minutes, obs_seconds)
+                self.log_tle_message(f"Tider til sat {ts_obs_times}")
+                # Beregn satellitpositioner fra TLE på observationstidspunkterne
+                tle_sat_positions = satellite.at(ts_obs_times).position.km
+                
+                # Beregn distance fra observatør til satellit (fra TLE)
+                obs_x = df['X_obs'].values
+                obs_y = df['Y_obs'].values
+                obs_z = df['Z_obs'].values
+                obs_positions = np.array([obs_x, obs_y, obs_z]).T
+                
+                distances = []
+                for i in range(len(tle_sat_positions.T)):
+                    sat_pos = tle_sat_positions.T[i]
+                    obs_pos = obs_positions[i]
+                    distance = np.linalg.norm(sat_pos - obs_pos)
+                    distances.append(distance)
+                
+                distances = np.array(distances)
+                if np.isnan(distances).any():
+                    self.log_tle_message("❌ Beregnede afstande indeholder NaN værdier")
+                
+                
+                # Konverter RA/DEC + distance til ECI xyz koordinater
+                self.log_tle_message(" Konverterer RA/DEC/Distance til ECI xyz...")
+                sat_xyz_from_radec = []
+                
+                for i in range(len(sat_ra_behandlet)):
+                    ra_rad = np.radians(sat_ra_behandlet[i])
+                    dec_rad = np.radians(sat_dec_behandlet[i])
+                    dist = distances[i]
+                    
+                    # Sfæriske til kartesiske koordinater (relative til observatør)
+                    x_rel = dist * np.cos(dec_rad) * np.cos(ra_rad)
+                    y_rel = dist * np.cos(dec_rad) * np.sin(ra_rad)
+                    z_rel = dist * np.sin(dec_rad)
+                    
+                    # Tilføj observatørens position for at få absolutte ECI koordinater
+                    x_abs = x_rel + obs_positions[i][0]
+                    y_abs = y_rel + obs_positions[i][1]
+                    z_abs = z_rel + obs_positions[i][2]
+                    
+                    sat_xyz_from_radec.append([x_abs, y_abs, z_abs])
+                
+                sat_xyz_from_radec = np.array(sat_xyz_from_radec)
+                
+                # Plot satellitpositioner beregnet fra RA/DEC og TLE distance
+                fig.add_trace(go.Scatter3d(
+                    x=sat_xyz_from_radec[:, 0],
+                    y=sat_xyz_from_radec[:, 1],
+                    z=sat_xyz_from_radec[:, 2],
+                    mode='markers',
+                    name='Satellit pos. obs (RA/DEC + TLE dist.)',
+                    marker=dict(size=5, color='red', symbol='diamond')
+                ))
+                
+                self.log_tle_message(f"✅ Tilføjet {len(sat_xyz_from_radec)} satellitpositioner fra RA/DEC")
+
+                # Plot satellitpositioner fra TLE
+                fig.add_trace(go.Scatter3d(
+                    x=self.tle_calculation_data['sat_pos_tle_original'][:, 0],
+                    y=self.tle_calculation_data['sat_pos_tle_original'][:, 1],
+                    z=self.tle_calculation_data['sat_pos_tle_original'][:, 2],
+                    mode='markers',
+                    name='Satellit pos. TLE',
+                    marker=dict(size=5, color='blue', symbol='diamond')
+                ))
+            
+            # Plot observationspunkter
+            obs_x = df['X_obs'].values
+            obs_y = df['Y_obs'].values
+            obs_z = df['Z_obs'].values
+            
+            fig.add_trace(go.Scatter3d(
+                x=obs_x,
+                y=obs_y,
+                z=obs_z,
+                mode='markers',
+                name='Observatør positioner',
+                marker=dict(size=3, color='orange', symbol='circle')
+            ))
+            
+            # Layout
+            fig.update_layout(
+                scene=dict(
+                    xaxis_title='X (km)',
+                    yaxis_title='Y (km)',
+                    zaxis_title='Z (km)',
+                    aspectmode='data'
+                ),
+                title=f'TLE Beregning ({self.tle_result["method"]} metode)',
+                showlegend=True
+            )
+            
+            # Vis plot
+            pyo.plot(fig, filename='tle_3d_plot.html', auto_open=True)
+            
+            self.log_tle_message("✅ 3D plot vist i browser")
+            
+        except Exception as e:
+            error_msg = f"Fejl ved plot: {str(e)}"
+            self.log_tle_message(f"❌ {error_msg}")
+            messagebox.showerror("Fejl", error_msg)
+    
+    def save_tle_results(self):
+        """Gemmer TLE resultater til CSV filen"""
+        try:
+            if self.tle_result is None:
+                messagebox.showwarning("Ingen resultat", "Beregn først en TLE")
+                return
+            
+            if self.tle_csv_directory is None:
+                messagebox.showwarning("Ingen fil", "Indlæs først en CSV-fil")
+                return
+            
+            self.log_tle_message("Gemmer resultater til CSV...")
+            
+            # Find CSV filen igen
+            csv_files = [f for f in os.listdir(self.tle_csv_directory) if f.startswith('data') and f.endswith('.csv')]
+            
+            if not csv_files:
+                messagebox.showerror("Fejl", "Kunne ikke finde CSV-fil i mappen")
+                return
+            
+            csv_path = os.path.join(self.tle_csv_directory, csv_files[0])
+            
+            # Indlæs CSV
+            df = pd.read_csv(csv_path)
+            
+            # Tilføj nye kolonner med TLE data
+            line1, line2 = self.tle_result['tle_lines']
+            df['Calculated_TLE_Line1'] = line1
+            df['Calculated_TLE_Line2'] = line2
+            df['TLE_Method'] = self.tle_result['method']
+            
+            # Tilføj orbital elementer
+            coe = self.tle_result['coe']
+            df['TLE_a_km'] = coe[0]
+            df['TLE_ecc'] = coe[1]
+            df['TLE_inc_deg'] = coe[2]
+            df['TLE_raan_deg'] = coe[3]
+            df['TLE_argp_deg'] = coe[4]
+            df['TLE_nu_deg'] = coe[5]
+            
+            # Tilføj position og hastighed
+            r = self.tle_result['r']
+            v = self.tle_result['v']
+            df['TLE_r_x_km'] = r[0]
+            df['TLE_r_y_km'] = r[1]
+            df['TLE_r_z_km'] = r[2]
+            df['TLE_v_x_kms'] = v[0]
+            df['TLE_v_y_kms'] = v[1]
+            df['TLE_v_z_kms'] = v[2]
+            
+            # Gem opdateret CSV
+            df.to_csv(csv_path, index=False)
+            
+            self.log_tle_message(f"✅ Resultater gemt til: {csv_files[0]}")
+            self.log_tle_message(f"Tilføjet kolonner:")
+            self.log_tle_message(f"- Calculated_TLE_Line1, Calculated_TLE_Line2")
+            self.log_tle_message(f"- TLE_Method, orbital elementer (a,e,i,Ω,ω,ν)")
+            self.log_tle_message(f"- Position (r_x,r_y,r_z) og hastighed (v_x,v_y,v_z)")
+            
+            
+        except Exception as e:
+            error_msg = f"Fejl ved gemning: {str(e)}"
+            self.log_tle_message(f"❌ {error_msg}")
+            messagebox.showerror("Fejl", error_msg)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = TkinterDemo(root)
+    root.mainloop()
+    
