@@ -76,8 +76,6 @@ def create_leapfrog_tab(self, notebook):
     
     ttk.Button(button_frame, text="Hent Valgt Satelitt", 
               command=self.get_selected_satellite).pack(side='left', padx=5)
-    ttk.Button(button_frame, text="Beregn LeapFrog Data", 
-              command=self.calculate_leapfrog_data).pack(side='left', padx=5)
     
     # Satelit info display
     info_frame = ttk.LabelFrame(selection_frame, text="Valgt Satelit Info")
@@ -85,36 +83,6 @@ def create_leapfrog_tab(self, notebook):
     
     self.sat_info_text = tk.Text(info_frame, height=3, wrap='word')
     self.sat_info_text.pack(fill='x', padx=5, pady=5)
-    
-    # Data tabel sektion (venstre side)
-    table_frame = ttk.LabelFrame(left_frame, text="LeapFrog Observationsdata")
-    table_frame.pack(fill='both', expand=True, pady=(0, 10))
-    
-    # Treeview til at vise leapfrog data
-    leapfrog_columns = ('DATE-OBS', 'Sat_DEC', 'Sat_RA_Hr', 'Sat_Alt', 'Sat_Az')
-    self.leapfrog_tree = ttk.Treeview(table_frame, columns=leapfrog_columns, show='headings', height=10)
-    
-    # Definer kolonner med optimerede bredder
-    column_widths_leapfrog = {
-        'DATE-OBS': 160,
-        'Sat_DEC': 120,
-        'Sat_RA_Hr': 120,
-        'Sat_Alt': 100,
-        'Sat_Az': 100
-    }
-    for col in leapfrog_columns:
-        self.leapfrog_tree.heading(col, text=col)
-        self.leapfrog_tree.column(col, width=column_widths_leapfrog.get(col, 100))
-    
-    # Scrollbars for leapfrog treeview
-    leapfrog_v_scrollbar = ttk.Scrollbar(table_frame, orient='vertical', command=self.leapfrog_tree.yview)
-    leapfrog_h_scrollbar = ttk.Scrollbar(table_frame, orient='horizontal', command=self.leapfrog_tree.xview)
-    self.leapfrog_tree.configure(yscrollcommand=leapfrog_v_scrollbar.set, xscrollcommand=leapfrog_h_scrollbar.set)
-    
-    # Pack treeview og scrollbars
-    leapfrog_v_scrollbar.pack(side='right', fill='y')
-    leapfrog_h_scrollbar.pack(side='bottom', fill='x')
-    self.leapfrog_tree.pack(side='left', fill='both', expand=True)
     
     # Plot sektion (venstre side)
     if PLOTLY_AVAILABLE:
@@ -148,12 +116,6 @@ def create_leapfrog_tab(self, notebook):
     self.leapfrog_interval_entry = ttk.Entry(params_frame, width=10)
     self.leapfrog_interval_entry.grid(row=1, column=3, padx=5, pady=5)
     self.leapfrog_interval_entry.insert(0, "15.0")
-    
-    # Slew delay
-    ttk.Label(params_frame, text="Slew delay (s):").grid(row=2, column=0, sticky='w', padx=5, pady=5)
-    self.leapfrog_slew_delay_entry = ttk.Entry(params_frame, width=10)
-    self.leapfrog_slew_delay_entry.grid(row=2, column=1, padx=5, pady=5)
-    self.leapfrog_slew_delay_entry.insert(0, "0.5")
     
     # PWI4 status
     if PWI4_AVAILABLE:
@@ -520,8 +482,22 @@ def start_leapfrog_observation(self):
     import threading
     from tkinter import messagebox
     
-    if self.df_leapfrog is None:
-        messagebox.showwarning("Ingen data", "Beregn først LeapFrog data")
+    # Tjek at satellit er valgt
+    if not hasattr(self, 'selected_satellite') or self.selected_satellite is None:
+        messagebox.showwarning("Ingen satellit", "Vælg først en satellit ved at trykke 'Hent Valgt Satelitt'")
+        return
+    
+    # Beregn LeapFrog data først
+    try:
+        log_message(self, "Beregner LeapFrog data...")
+        self.calculate_leapfrog_data()
+    except Exception as e:
+        messagebox.showerror("Beregningsfejl", f"Kunne ikke beregne LeapFrog data: {str(e)}")
+        return
+    
+    # Tjek at data blev beregnet
+    if self.df_leapfrog is None or len(self.df_leapfrog) == 0:
+        messagebox.showerror("Ingen data", "LeapFrog data kunne ikke genereres")
         return
     
     if self.leapfrog_observation_running:
@@ -555,28 +531,20 @@ def start_leapfrog_observation(self):
     # DATE-OBS er nu i lokal tid (efter konvertering i calculate_leapfrog_data)
     df_work['DATE-OBS'] = pd.to_datetime(df_work['DATE-OBS'])
     
-    # Find hvor mange punkter der er passeret - sammenlign lokal tid med lokal tid
-    passed_points = 0
+    # Beregn hvor mange punkter der er brugbare (mindst 30s før observation)
+    slew_time_required = 30
+    available_points = 0
     for _, row in df_work.iterrows():
-        planned_time_local = row['DATE-OBS']  # Dette er allerede i lokal tid
-        if planned_time_local < current_time:
-            passed_points += 1
-        else:
-            break
+        planned_time_local = row['DATE-OBS']
+        time_to_observation = (planned_time_local - current_time).total_seconds()
+        if time_to_observation >= slew_time_required:
+            available_points += 1
     
-    if passed_points > 0:
-        remaining_points = len(df_work) - passed_points
-        if remaining_points == 0:
-            messagebox.showerror("For sent", "Alle observationspunkter er allerede passeret!")
-            return
-        else:
-            result = messagebox.askyesno(
-                "Observation startet sent", 
-                f"{passed_points} af {len(df_work)} punkter er allerede passeret.\n"
-                f"Vil du fortsætte med de resterende {remaining_points} punkter?"
-            )
-            if not result:
-                return
+    if available_points == 0:
+        messagebox.showerror("For sent", "Alle observationspunkter er allerede passeret eller ligger for tæt på (mindre end 30s til slew)!")
+        return
+    
+    log_message(self, f"{available_points} af {len(df_work)} observationspunkter er tilgængelige")
     
     # Skift knap tilstande
     self.start_obs_btn.config(state='disabled')
@@ -648,10 +616,9 @@ def _execute_leapfrog_observation(self):
         pw4_url = self.leapfrog_pw4_url_entry.get().strip()
         exposure_time = float(self.leapfrog_exposure_time_entry.get())
         interval_between_obs = float(self.leapfrog_interval_entry.get())
-        slew_delay = float(self.leapfrog_slew_delay_entry.get())
         
-        # Fast kamera start før planlagt tid (0.7 sekunder)
-        camera_start_before = 0.7
+        # Fast kamera start før planlagt tid (0.8 sekunder)
+        camera_start_before = 0.8
         
         # Valider parametre
         if x_binning < 1 or y_binning < 1 or x_binning > 16 or y_binning > 16:
@@ -664,10 +631,6 @@ def _execute_leapfrog_observation(self):
             
         if interval_between_obs < 0 or interval_between_obs > 300:
             messagebox.showerror("Ugyldig interval", "Interval mellem observationer skal være mellem 0 og 300 sekunder")
-            return
-            
-        if slew_delay < 0 or slew_delay > 10:
-            messagebox.showerror("Ugyldig slew delay", "Slew delay skal være mellem 0 og 10 sekunder")
             return
         
         # Opret mappe struktur
@@ -749,17 +712,19 @@ def _execute_leapfrog_observation(self):
         # Tjek om observation er startet for sent
         current_time = datetime.now()
         utc_offset = getattr(self, 'utc_offset', 2)
+        slew_time_required = 30  # Sekunder nødvendigt for at slew til første punkt
         
-        # Find det første punkt der er efter nuværende tid
+        # Find det første punkt der er mindst 30 sekunder i fremtiden (til slew tid)
         start_index = 0
         for i, row in df_work.iterrows():
             planned_time_local = row['DATE-OBS']  # Dette er allerede i lokal tid
-            if planned_time_local > current_time:
+            time_to_observation = (planned_time_local - current_time).total_seconds()
+            if time_to_observation >= slew_time_required:
                 start_index = i
                 break
         else:
-            # Alle punkter er passeret
-            log_message(self, "ADVARSEL: Alle observationspunkter er passeret! Observationen springer over.")
+            # Alle punkter er passeret eller ligger for tæt på
+            log_message(self, "ADVARSEL: Alle observationspunkter er passeret eller ligger for tæt på (mindre end 30s til slew)! Observationen springer over.")
             return
         
         if start_index > 0:
@@ -778,7 +743,6 @@ def _execute_leapfrog_observation(self):
             # Beregn tider i lokal tid
             camera_start_time = planned_time - timedelta(seconds=camera_start_before)
             camera_stop_time = planned_time + timedelta(seconds=exposure_time)
-            slew_next_time = camera_stop_time + timedelta(seconds=slew_delay)
             
             # Konverter RA til decimal timer
             ra_hours = hms_to_hours(self, ra_str)
@@ -867,11 +831,6 @@ def _execute_leapfrog_observation(self):
                     
             except Exception as e:
                 log_message(self, f"Fejl ved tag af billede: {str(e)}")
-            
-            # Hvis der er flere punkter, planlæg næste slew
-            if i < len(df_work) - 1:
-                log_message(self, f"Venter til næste slew tid: {slew_next_time}")
-                wait_until(self, slew_next_time)
         
         log_message(self, "LeapFrog observation færdig!")
         
