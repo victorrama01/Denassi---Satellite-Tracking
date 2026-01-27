@@ -1,6 +1,31 @@
 import tkinter as tk
-from tkinter import ttk
-from datetime import datetime
+from tkinter import ttk, filedialog, messagebox
+from datetime import datetime, timedelta
+import os
+import requests
+import pandas as pd
+import re
+import time
+import threading
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from bs4 import BeautifulSoup
+
+# Optional dependencies
+try:
+    from selenium import webdriver
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
+
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+    WEBDRIVER_MANAGER_AVAILABLE = True
+except ImportError:
+    WEBDRIVER_MANAGER_AVAILABLE = False
 
 def create_satellite_tab(self, notebook):
     """Tab til at hente satelitlister"""
@@ -158,3 +183,670 @@ def create_satellite_tab(self, notebook):
     # Status label (nederst ved satelitlisten)
     self.status_label = ttk.Label(main_container, text="Klar til at hente satelitdata...")
     self.status_label.pack(pady=5)
+
+def get_satellite_status(self, start_time_str, end_time_str, selected_date):
+    """
+    Bestemmer status for en satelit baseret på nuværende tid
+    
+    Args:
+        start_time_str (str): StartTime i format 'HH:MM'
+        end_time_str (str): EndTime i format 'HH:MM'
+        selected_date (str): Datoen for satelitpassagen i format 'YYYY-MM-DD'
+        
+    Returns:
+        str: 'passed', 'starting_soon', 'active', eller 'normal'
+    """
+    try:
+        # Konverter strenge til datetime objekter
+        current_datetime = datetime.now()
+        
+        # Parse den valgte dato
+        selected_datetime = datetime.strptime(selected_date, '%Y-%m-%d')
+        
+        # Tjek om vi kigger på i dag
+        if selected_datetime.date() != current_datetime.date():
+            return 'normal'  # Hvis det ikke er i dag, vis normal farve
+        
+        # Parse tiderne - prøv først med sekunder, derefter uden
+        try:
+            start_time = datetime.strptime(start_time_str, '%H:%M:%S').time()
+        except ValueError:
+            start_time = datetime.strptime(start_time_str, '%H:%M').time()
+        
+        try:
+            end_time = datetime.strptime(end_time_str, '%H:%M:%S').time()
+        except ValueError:
+            end_time = datetime.strptime(end_time_str, '%H:%M').time()
+        
+        # Kombiner dato og tid
+        start_datetime = datetime.combine(selected_datetime.date(), start_time)
+        end_datetime = datetime.combine(selected_datetime.date(), end_time)
+        
+        # Håndter tilfælde hvor end_time er efter midnat (næste dag)
+        if end_time < start_time:
+            end_datetime = end_datetime + timedelta(days=1)
+        
+        # Sammenlign med nuværende tid
+        current_time = current_datetime
+        
+        # Tjek status
+        if current_time > end_datetime:
+            return 'passed'  # Passeret
+        elif current_time >= start_datetime:
+            return 'active'  # Aktiv nu
+        elif (start_datetime - current_time).total_seconds() <= 300:  # 5 minutter = 300 sekunder
+            return 'starting_soon'  # Starter snart
+        else:
+            return 'normal'  # Normal
+            
+    except (ValueError, TypeError):
+        return 'normal'  # Hvis parsing fejler, returner normal
+            
+def fetch_satellites_threaded(self):
+    """Starter satelit-hentning i separat tråd"""
+    self.log_satellite_message("Starter satelit hentning...")
+    threading.Thread(target=self.fetch_satellites, daemon=True).start()
+
+def fetch_satellites(self):
+    """Hent satelitlister fra Heavens Above og Space-Track"""
+    try:
+        # Tjek at Selenium er tilgængeligt
+        if not SELENIUM_AVAILABLE:
+            self.log_satellite_message("❌ Selenium ikke tilgængelig")
+            messagebox.showerror("Fejl", "Selenium er ikke installeret. Installer med: pip install selenium beautifulsoup4")
+            return
+            
+        # Hent input værdier
+        date_str = self.date_entry.get()
+        lat = float(self.lat_entry.get())
+        lng = float(self.lng_entry.get())
+        period = self.period_combo.get()
+        username = self.username_entry.get()
+        password = self.password_entry.get()
+        utc_offset = float(self.utc_offset_entry.get())
+        
+        if not username or not password:
+            self.log_satellite_message("❌ Manglende Space-Track login oplysninger")
+            messagebox.showerror("Fejl", "Indtast Space-Track login oplysninger")
+            return
+        
+        self.log_satellite_message(f"Henter data for {date_str}, {period}")
+        self.log_satellite_message(f"Lokation: {lat:.4f}, {lng:.4f}")
+        self.status_label.config(text="Henter satelitdata...")
+        self.progress_var.set(20)
+        
+        # Kald dine funktioner
+        self.df_merged, self.df_heavens = self.fetch_satellite_data_with_tle(
+            date_str, username, password, lat, lng, period, utc_offset
+        )
+
+        self.log_satellite_message("Sorterer data efter starttid...")
+        # Sorter data efter StartTime
+        self.df_merged = self.sort_dataframe_by_starttime(self.df_merged)
+        
+        self.progress_var.set(90)
+        
+        # Opdater treeview
+        self.log_satellite_message("Opdaterer satelitliste...")
+        self.update_satellite_tree()
+        
+        self.progress_var.set(100)
+        success_msg = f"Hentet {len(self.df_merged)} satellitter med TLE data (sorteret efter starttid)"
+        self.status_label.config(text=success_msg)
+        
+    except Exception as e:
+        error_msg = f"Fejl ved hentning: {str(e)}"
+        self.log_satellite_message(f"❌ {error_msg}")
+        messagebox.showerror("Fejl", error_msg)
+        self.status_label.config(text="Fejl ved hentning af data")
+    finally:
+        self.progress_var.set(0)
+
+def update_satellite_tree(self):
+    """Opdater treeview med satelitdata og farvekodning"""
+    # Ryd tidligere data
+    for item in self.satellite_tree.get_children():
+        self.satellite_tree.delete(item)
+    
+    if self.df_merged is not None:
+        selected_date = self.date_entry.get()
+        
+        for _, row in self.df_merged.iterrows():
+            values = (
+                row.get('SatName', ''),
+                row.get('NORAD', ''),
+                row.get('StartTime', ''),
+                row.get('HiTime', ''),
+                row.get('EndTime', ''),
+                row.get('HiAlt', ''),
+                row.get('Magnitude', ''),
+                row.get('TLE1', '')[:50] + '...' if len(str(row.get('TLE1', ''))) > 50 else row.get('TLE1', ''),
+                row.get('TLE2', '')[:50] + '...' if len(str(row.get('TLE2', ''))) > 50 else row.get('TLE2', '')
+            )
+            
+            # Bestem farvekategori
+            start_time = str(row.get('StartTime', ''))
+            end_time = str(row.get('EndTime', ''))
+            status = self.get_satellite_status(start_time, end_time, selected_date)
+            
+            # Indsæt række med korrekt farvetag
+            self.satellite_tree.insert('', 'end', values=values, tags=(status,))
+
+def save_satellite_list(self):
+    """Gem satelitlisten til fil"""
+    if self.df_merged is None:
+        self.log_satellite_message("❌ Ingen data at gemme")
+        messagebox.showwarning("Advarsel", "Ingen data at gemme!")
+        return
+    
+    self.log_satellite_message("Åbner gem dialog...")
+    filename = filedialog.asksaveasfilename(
+        title="Gem satelitliste",
+        defaultextension=".csv",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
+    
+    if filename:
+        self.log_satellite_message(f"Gemmer liste til: {filename}")
+        self.df_merged.to_csv(filename, index=False, sep=';')
+        self.log_satellite_message("✅ Satelitliste gemt succesfuldt")
+        messagebox.showinfo("Gemt", f"Satelitliste gemt som: {filename}")
+    else:
+        self.log_satellite_message("❌ Gem operation afbrudt")
+
+def clear_satellite_list(self):
+    """Ryd satelitlisten"""
+    self.log_satellite_message("Rydder satelitliste...")
+    for item in self.satellite_tree.get_children():
+        self.satellite_tree.delete(item)
+    self.df_merged = None
+    self.df_heavens = None
+    self.log_satellite_message("✅ Satelitliste ryddet")
+    self.status_label.config(text="Liste ryddet")
+
+def load_csv_file(self):
+    """Åbner og indlæser en CSV-fil med satelitdata"""
+    self.log_satellite_message("Åbner fil dialog for CSV...")
+    try:
+        filename = filedialog.askopenfilename(
+            title="Åbn satelitdata CSV-fil",
+            filetypes=[
+                ("CSV files", "*.csv"),
+                ("Semicolon separated", "*.csv"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if not filename:
+            self.log_satellite_message("❌ Ingen fil valgt")
+            return
+        
+        self.log_satellite_message(f"Indlæser CSV-fil: {filename}")
+        self.status_label.config(text="Indlæser CSV-fil...")
+        self.progress_var.set(20)
+        
+        # Prøv forskellige separatorer
+        separators = [';', ',', '\t']
+        df_loaded = None
+        
+        for sep in separators:
+            try:
+                df_test = pd.read_csv(filename, sep=sep, nrows=5)
+                # Tjek om vi har de forventede kolonner
+                expected_cols = ['SatName', 'NORAD', 'StartTime', 'HiTime', 'EndTime']
+                if any(col in df_test.columns for col in expected_cols):
+                    df_loaded = pd.read_csv(filename, sep=sep)
+                    self.status_label.config(text=f"CSV indlæst med separator '{sep}'")
+                    break
+            except:
+                continue
+        
+        if df_loaded is None:
+            # Hvis automatisk detektion fejler, prøv standard CSV
+            df_loaded = pd.read_csv(filename)
+        
+        self.progress_var.set(60)
+        
+        # Valider og rens data
+        df_loaded = self.validate_csv_data(df_loaded)
+        
+        # Sorter data efter StartTime
+        df_loaded = self.sort_dataframe_by_starttime(df_loaded)
+        
+        self.progress_var.set(80)
+        
+        # Opdater variabler
+        self.df_merged = df_loaded
+        
+        # Opdater display
+        self.log_satellite_message("Opdaterer satelitliste fra CSV...")
+        self.update_satellite_tree()
+        
+        self.progress_var.set(100)
+        success_msg = f"CSV-fil indlæst: {len(df_loaded)} satellitter (sorteret efter starttid)"
+        self.log_satellite_message(f"✅ {success_msg}")
+        self.status_label.config(text=success_msg)
+        
+        messagebox.showinfo("Succes", f"CSV-fil indlæst med {len(df_loaded)} satellitter")
+        
+    except Exception as e:
+        error_msg = f"Kunne ikke indlæse CSV-fil: {str(e)}"
+        self.log_satellite_message(f"❌ {error_msg}")
+        messagebox.showerror("Fejl", error_msg)
+        self.status_label.config(text="Fejl ved indlæsning af CSV-fil")
+    finally:
+        self.progress_var.set(0)
+
+def validate_csv_data(self, df):
+    """Validerer og renser CSV-data for at sikre kompatibilitet"""
+    try:
+        # Standardiser kolonnenavne (case-insensitive mapping)
+        column_mapping = {
+            'satname': 'SatName',
+            'satellite': 'SatName',
+            'name': 'SatName',
+            'norad': 'NORAD',
+            'norad_id': 'NORAD',
+            'starttime': 'StartTime',
+            'start_time': 'StartTime',
+            'hitime': 'HiTime',
+            'hi_time': 'HiTime',
+            'endtime': 'EndTime',
+            'end_time': 'EndTime',
+            'hialt': 'HiAlt',
+            'hi_alt': 'HiAlt',
+            'altitude': 'HiAlt',
+            'magnitude': 'Magnitude',
+            'mag': 'Magnitude',
+            'tle1': 'TLE1',
+            'tle_1': 'TLE1',
+            'tle2': 'TLE2',
+            'tle_2': 'TLE2'
+        }
+        
+        # Omdøb kolonner
+        df_renamed = df.copy()
+        for old_col in df.columns:
+            standard_name = column_mapping.get(old_col.lower())
+            if standard_name:
+                df_renamed = df_renamed.rename(columns={old_col: standard_name})
+        
+        # Sikr at vi har minimumskolonner
+        required_cols = ['SatName', 'NORAD']
+        missing_cols = [col for col in required_cols if col not in df_renamed.columns]
+        
+        if missing_cols:
+            # Prøv at oprette manglende kolonner med standardværdier
+            for col in missing_cols:
+                if col == 'SatName':
+                    df_renamed['SatName'] = f"Satellite_{df_renamed.index}"
+                elif col == 'NORAD':
+                    df_renamed['NORAD'] = range(1, len(df_renamed) + 1)
+        
+        # Sikr at NORAD er numerisk
+        if 'NORAD' in df_renamed.columns:
+            df_renamed['NORAD'] = pd.to_numeric(df_renamed['NORAD'], errors='coerce')
+        
+        # Fjern rækker med tomme satelitnavne
+        df_renamed = df_renamed.dropna(subset=['SatName'])
+        
+        return df_renamed
+        
+    except Exception as e:
+        # Hvis validering fejler, returner original DataFrame
+        print(f"Validering fejlede: {e}")
+        return df
+
+def fetch_active_tles(self, username, password):
+    """Henter alle aktive TLE'er fra Space-Track"""
+    LOGIN_URL = "https://www.space-track.org/ajaxauth/login"
+    
+    # Prøv flere forskellige API endpoints i prioriteret rækkefølge
+    TLE_URLS = [
+        # GP (General Perturbations) data - ofte mere stabilt
+        "https://www.space-track.org/basicspacedata/query/class/gp/EPOCH/>now-14/orderby/NORAD_CAT_ID/format/json",
+        # TLE Latest uden filter
+        "https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/format/json",
+        # TLE Latest med limit
+        "https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/limit/50000/format/json",
+        # 3LE format (alternativ)
+        "https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/format/3le"
+    ]
+    
+    try:
+        with requests.Session() as session:
+            # Login med credentials
+            login_data = {"identity": username, "password": password}
+            self.log_satellite_message(f"Logger ind på Space-Track som {username}...")
+            
+            resp = session.post(LOGIN_URL, data=login_data, timeout=30)
+            
+            if resp.status_code != 200:
+                raise Exception(f"Login fejlede med HTTP {resp.status_code}")
+            
+            # Tjek om login faktisk lykkedes ved at kigge på response
+            if "error" in resp.text.lower() or "invalid" in resp.text.lower():
+                raise Exception("Login fejlede - check brugernavn og password")
+            
+            # Tjek om vi har en session cookie
+            if not session.cookies:
+                self.log_satellite_message("⚠️ Ingen session cookies - login kan have fejlet")
+            else:
+                self.log_satellite_message(f"✅ Login succesfuldt (cookies: {len(session.cookies)})")
+            
+            # Prøv hver URL i rækkefølge
+            tle_resp = None
+            successful_url = None
+            
+            for i, url in enumerate(TLE_URLS):
+                try:
+                    self.log_satellite_message(f"Prøver API endpoint {i+1}/{len(TLE_URLS)}...")
+                    tle_resp = session.get(url, timeout=90)
+                    
+                    if tle_resp.status_code == 200 and tle_resp.text and tle_resp.text.strip():
+                        successful_url = url
+                        self.log_satellite_message(f"✅ Succesfuld forbindelse til endpoint {i+1}")
+                        break
+                    else:
+                        self.log_satellite_message(f"❌ Endpoint {i+1} fejlede (HTTP {tle_resp.status_code})")
+                except Exception as url_err:
+                    self.log_satellite_message(f"❌ Endpoint {i+1} fejl: {str(url_err)[:50]}")
+                    continue
+            
+            # Hvis ingen URL'er virkede
+            if not successful_url or not tle_resp or tle_resp.status_code != 200:
+                raise Exception(
+                    "Alle Space-Track API endpoints fejlede. "
+                    "Mulige årsager: 1) Forkert login 2) Space-Track nede 3) Rate limit nået. "
+                    "Prøv igen om få minutter eller check https://www.space-track.org"
+                )
+            
+            # Parse response baseret på format
+            if not tle_resp.text or tle_resp.text.strip() == "":
+                raise Exception("Tom response fra Space-Track")
+            
+            tle_data = []
+            
+            # Tjek om det er JSON eller 3LE format
+            if "format/json" in successful_url:
+                # JSON format
+                try:
+                    tle_json = tle_resp.json()
+                except Exception as json_err:
+                    raise Exception(f"Kunne ikke parse JSON: {json_err}")
+                
+                if not tle_json or len(tle_json) == 0:
+                    raise Exception("Tom JSON array modtaget")
+                
+                self.log_satellite_message(f"Modtaget {len(tle_json)} objekter fra Space-Track")
+                
+                # Parse JSON entries
+                for entry in tle_json:
+                    try:
+                        norad_id = str(entry.get('NORAD_CAT_ID', '')).strip()
+                        object_name = entry.get('OBJECT_NAME', f"NORAD-{norad_id}")
+                        tle_line1 = entry.get('TLE_LINE1', '').strip()
+                        tle_line2 = entry.get('TLE_LINE2', '').strip()
+                        
+                        # Valider TLE linjer
+                        if (tle_line1.startswith('1 ') and tle_line2.startswith('2 ') and 
+                            norad_id and len(tle_line1) >= 69 and len(tle_line2) >= 69):
+                            
+                            tle_data.append({
+                                'Name': object_name,
+                                'NORAD_ID': norad_id,
+                                'TLE1': tle_line1,
+                                'TLE2': tle_line2
+                            })
+                    except Exception:
+                        continue
+            
+            else:
+                # 3LE format (3 linjer: navn, line1, line2)
+                lines = [line.strip() for line in tle_resp.text.splitlines() if line.strip()]
+                self.log_satellite_message(f"Modtaget {len(lines)} linjer i 3LE format")
+                
+                i = 0
+                while i < len(lines) - 2:
+                    name = lines[i]
+                    line1 = lines[i + 1]
+                    line2 = lines[i + 2]
+                    
+                    if line1.startswith('1 ') and line2.startswith('2 '):
+                        norad_id = line1[2:7].strip()
+                        tle_data.append({
+                            'Name': name,
+                            'NORAD_ID': norad_id,
+                            'TLE1': line1,
+                            'TLE2': line2
+                        })
+                        i += 3
+                    else:
+                        i += 1
+            
+            if len(tle_data) == 0:
+                raise Exception("Ingen gyldige TLE'er kunne parses fra Space-Track data")
+            
+            self.log_satellite_message(f"✅ Parsede {len(tle_data)} gyldige TLE'er")
+            return pd.DataFrame(tle_data)
+            
+    except requests.exceptions.Timeout:
+        raise Exception("Timeout - Space-Track.org svarer ikke (prøv igen senere)")
+    except requests.exceptions.ConnectionError:
+        raise Exception("Ingen internet forbindelse til Space-Track.org")
+    except Exception as e:
+        raise Exception(f"Space-Track fejl: {str(e)}")
+
+def fetch_satellite_data_selenium(self, date, lat=55.781553, lng=12.514595, period='morning'):
+    """Henter satellitdata fra Heavens-Above"""
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+
+    # Prøv at bruge WebDriverManager hvis tilgængelig
+    if WEBDRIVER_MANAGER_AVAILABLE:
+        try:
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+        except Exception as e:
+            # Hvis WebDriverManager fejler, prøv standard metode
+            print(f"WebDriverManager fejlede: {e}")
+            try:
+                driver = webdriver.Chrome(options=options)
+            except Exception as chrome_error:
+                raise Exception(f"Chrome WebDriver fejl. Installer chromedriver eller kør: pip install webdriver-manager. Fejl: {chrome_error}")
+    else:
+        # Fallback til standard Chrome driver
+        try:
+            driver = webdriver.Chrome(options=options)
+        except Exception as chrome_error:
+            raise Exception(f"Chrome WebDriver ikke fundet. Installer webdriver-manager med: pip install webdriver-manager. Fejl: {chrome_error}")
+    
+    try:
+        url = f"https://www.heavens-above.com/AllSats.aspx?lat={lat}&lng={lng}&date={date}"
+        driver.get(url)
+        wait = WebDriverWait(driver, 10)
+
+        try:
+            exclude_box = wait.until(EC.presence_of_element_located((By.ID, "ctl00_cph1_chkExcludeStarlink")))
+            if exclude_box.is_selected():
+                driver.execute_script("arguments[0].click();", exclude_box)
+                time.sleep(0.5)
+        except Exception:
+            pass
+
+        radio_id = {
+            'morning': "ctl00_cph1_TimeSelectionControl1_radioAMPM_0",
+            'evening': "ctl00_cph1_TimeSelectionControl1_radioAMPM_1"
+        }[period.lower()]
+
+        radio = wait.until(EC.presence_of_element_located((By.ID, radio_id)))
+        driver.execute_script("arguments[0].scrollIntoView(true);", radio)
+        driver.execute_script("arguments[0].click();", radio)
+
+        update_button = driver.find_element(By.ID, "ctl00_cph1_TimeSelectionControl1_btnSubmit")
+        driver.execute_script("arguments[0].scrollIntoView(true);", update_button)
+        driver.execute_script("arguments[0].click();", update_button)
+
+        time.sleep(1) # Vent for opdatering
+
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        table = soup.find('table', {'class': 'standardTable'})
+        rows = table.find_all('tr')[1:]
+
+        data = []
+        for row in rows:
+            cols = row.find_all('td')
+            if len(cols) >= 10:
+                onclick_attr = row.get('onclick', '')
+                norad_id = None
+                if onclick_attr:
+                    match = re.search(r"satid=(\d+)", onclick_attr)
+                    if match:
+                        norad_id = int(match.group(1))
+
+                data.append({
+                    'SatName': cols[0].text.strip(),
+                    'Magnitude': cols[1].text.strip(),
+                    'StartTime': cols[2].text.strip(),
+                    'StartAlt': cols[3].text.strip(),
+                    'StartAz': cols[4].text.strip(),
+                    'HiTime': cols[5].text.strip(),
+                    'HiAlt': cols[6].text.strip(),
+                    'HiAz': cols[7].text.strip(),
+                    'EndTime': cols[8].text.strip(),
+                    'EndAlt': cols[9].text.strip(),
+                    'EndAz': cols[10].text.strip() if len(cols) > 10 else None,
+                    'NORAD': norad_id,
+                    'Period': period.capitalize()
+                })
+
+        df = pd.DataFrame(data)
+        df['NORAD'] = df['NORAD'].astype('Int64')
+
+        # Tidsformattering og oprydning som i din originale kode
+        time_cols = ['StartTime', 'HiTime', 'EndTime']
+        for col in time_cols:
+            # Gem original string data for fallback
+            original_col = df[col].str.strip()
+            # Prøv først %H:%M:%S (standard Heavens-Above format), derefter %H:%M som fallback
+            df[col] = pd.to_datetime(original_col, format='%H:%M:%S', errors='coerce')
+            # Hvis nogle værdier er NaN, prøv at parse de originale strenge med %H:%M
+            mask = df[col].isna()
+            if mask.any():
+                df.loc[mask, col] = pd.to_datetime(original_col[mask], format='%H:%M', errors='coerce')
+            # Ikke tilføj fast tidsforskydning her - det gøres i GUI baseret på brugerens valg
+            df[col] = df[col].dt.strftime('%H:%M:%S')
+
+        df = df.iloc[1:]
+
+        cols_to_clean = ['StartAlt', 'StartAz', 'HiAlt', 'HiAz', 'EndAlt', 'EndAz']
+        for col in cols_to_clean:
+            df[col] = df[col].str.replace('°', '', regex=False).str.strip()
+
+        df['StartAz'] = df['StartAz'].str.replace('Ø', 'E').str.replace('V', 'W')
+        df['HiAz'] = df['HiAz'].str.replace('Ø', 'E').str.replace('V', 'W')
+        df['EndAz'] = df['EndAz'].str.replace('Ø', 'E').str.replace('V', 'W')
+
+        df = df.drop(columns=['Period'])
+        df = df.reset_index(drop=True)
+        return df
+
+    finally:
+        driver.quit()
+
+def fetch_satellite_data_with_tle(self, date, username, password, lat=55.781553, lng=12.514595, period='morning', utc_offset=2):
+    """Hovedfunktion der kombinerer Heavens-Above og Space-Track data"""
+    self.progress_var.set(30)
+    self.log_satellite_message("Henter aktive TLE'er fra Space-Track...")
+    df_TLE = self.fetch_active_tles(username, password)
+    self.log_satellite_message(f"Hentede {len(df_TLE)} aktive TLE'er fra Space-Track")
+
+    df_TLE['NORAD_ID'] = pd.to_numeric(df_TLE['NORAD_ID'], errors='coerce')
+    
+    self.progress_var.set(60)
+
+    self.log_satellite_message("Henter satellitdata fra Heavens-Above...")
+    df_heavens = self.fetch_satellite_data_selenium(date, lat, lng, period)
+    self.log_satellite_message(f"Hentede {len(df_heavens)} satellitter fra Heavens-Above")
+
+    # Tilføj UTC offset til tiderne efter hentning
+    time_cols = ['StartTime', 'HiTime', 'EndTime']
+    self.log_satellite_message(f"Anvender UTC offset på {utc_offset} timer til tiderne")
+
+    for col in time_cols:
+        if col in df_heavens.columns:
+            # Data kommer allerede formateret som %H:%M:%S fra selenium funktionen
+            # så vi parser direkte med det format
+            df_heavens[col] = pd.to_datetime(df_heavens[col], format='%H:%M:%S', errors='coerce')
+            df_heavens[col] = df_heavens[col] + pd.Timedelta(hours=utc_offset)
+            df_heavens[col] = df_heavens[col].dt.strftime('%H:%M:%S')
+    
+    self.progress_var.set(80)
+    self.log_satellite_message("Sammenfletter Heavens-Above data med TLE'er...")
+    df_merged = df_heavens.merge(df_TLE, left_on='NORAD', right_on='NORAD_ID', how='left')
+    df_merged = df_merged.drop(columns=['NORAD_ID', 'Name'])
+    df_merged = df_merged.reset_index(drop=True)
+    df_merged = df_merged.dropna(subset=['TLE1'])
+    
+    return df_merged, df_heavens
+
+def open_file(self):
+    """Opdateret open_file metode med CSV-support"""
+    file_types = [
+        ("CSV files", "*.csv"),
+        ("All files", "*.*")
+    ]
+    
+    filename = filedialog.askopenfilename(
+        title="Åbn fil",
+        filetypes=file_types
+    )
+    
+    if filename:
+        if filename.endswith('.csv'):
+            self.load_csv_file_direct(filename)
+        else:
+            messagebox.showinfo("Info", f"Åbnede fil: {filename}")
+
+def load_csv_file_direct(self, filename):
+    """Hjælpemetode til at indlæse CSV direkte fra filnavn"""
+    try:
+        # Prøv forskellige separatorer
+        separators = [';', ',', '\t']
+        df_loaded = None
+        
+        for sep in separators:
+            try:
+                df_test = pd.read_csv(filename, sep=sep, nrows=5)
+                expected_cols = ['SatName', 'NORAD', 'StartTime', 'HiTime', 'EndTime']
+                if any(col in df_test.columns for col in expected_cols):
+                    df_loaded = pd.read_csv(filename, sep=sep)
+                    break
+            except:
+                continue
+        
+        if df_loaded is None:
+            df_loaded = pd.read_csv(filename)
+        
+        # Valider data
+        df_loaded = self.validate_csv_data(df_loaded)
+        
+        # Sorter data efter StartTime
+        df_loaded = self.sort_dataframe_by_starttime(df_loaded)
+        
+        # Opdater variabler
+        self.df_merged = df_loaded
+        
+        # Opdater display
+        self.update_satellite_tree()
+        
+        self.status_label.config(text=f"CSV-fil indlæst: {len(df_loaded)} satellitter (sorteret efter starttid)")
+        messagebox.showinfo("Succes", f"CSV-fil indlæst med {len(df_loaded)} satellitter")
+        
+    except Exception as e:
+        messagebox.showerror("Fejl", f"Kunne ikke indlæse CSV-fil:\n{str(e)}")
+
+def save_file(self):
+    messagebox.showinfo("Gem", "Gem fil funktion")
