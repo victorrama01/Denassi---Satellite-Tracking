@@ -5,7 +5,7 @@ REM This script activates the correct conda environment and starts the GUI
 title Satellite Tracking GUI
 
 REM Change to the GUI directory
-cd /d "C:\Users\denassi\Desktop\Specialprojekt 2025\GUI"
+cd /d "C:\Users\denassi\Documents\GUI - Repo\Denassi---Satellite-Tracking\GUI"
 
 REM Activate conda environment and start the GUI
 echo Starting Satellite Tracking GUI...
