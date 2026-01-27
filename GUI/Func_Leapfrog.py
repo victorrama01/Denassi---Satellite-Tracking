@@ -20,7 +20,7 @@ except ImportError:
     PLOTLY_AVAILABLE = False
 
 try:
-    from pwi4_client import PWI4Client
+    from pwi4_client import PWI4Telescope
     PWI4_AVAILABLE = True
 except ImportError:
     PWI4_AVAILABLE = False
@@ -643,7 +643,6 @@ def run_leapfrog_observation(self):
 
 def _execute_leapfrog_observation(self):
     """Kør rigtig observation med PWI4"""
-    from pwi4_client import PWI4Telescope
     from astropy.io import fits
     import numpy as np
     import os
