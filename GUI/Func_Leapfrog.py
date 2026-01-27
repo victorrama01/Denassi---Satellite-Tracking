@@ -329,9 +329,6 @@ def calculate_leapfrog_data(self):
         self.afstand = afstand
         self.utc_offset = utc_offset  # Gem til senere brug
         
-        # Opdater tabel
-        update_leapfrog_table(self)
-        
         log_message(self, f"LeapFrog data beregnet for {len(self.df_leapfrog)} punkter (interval: {interval_between_obs}s, UTC offset: {utc_offset} timer)")
         
     except Exception as e:
