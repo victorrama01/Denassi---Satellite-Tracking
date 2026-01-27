@@ -408,676 +408,79 @@ class TkinterDemo:
     # =================
     
     def log_message(self, message):
-        """Tilføj besked til log"""
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.log_text.see(tk.END)
-        self.root.update()
+        """Wrapper: Tilføj besked til log"""
+        from Func_Leapfrog import log_message as func
+        return func(self, message)
     
     def get_selected_satellite(self):
-        """Henter den valgte satellit fra satellitlisten"""
-        try:
-            selection = self.satellite_tree.selection()
-            if not selection:
-                messagebox.showwarning("Ingen valg", "Vælg venligst en satelitt fra listen")
-                return
-            
-            item = selection[0]
-            values = self.satellite_tree.item(item, 'values')
-            
-            # Udtræk satellit information
-            self.selected_satellite = {
-                'SatName': values[0],
-                'NORAD': values[1],
-                'StartTime': values[2],
-                'EndTime': values[4],
-                'TLE1': self.get_full_tle_from_selection(item)[0],
-                'TLE2': self.get_full_tle_from_selection(item)[1]
-            }
-            
-            # Vis satellit info
-            info_text = f"Satellit: {self.selected_satellite['SatName']}\n"
-            info_text += f"NORAD ID: {self.selected_satellite['NORAD']}\n"
-            info_text += f"Observation: {self.selected_satellite['StartTime']} - {self.selected_satellite['EndTime']}"
-            
-            self.sat_info_text.delete(1.0, tk.END)
-            self.sat_info_text.insert(1.0, info_text)
-            
-            self.log_message(f"Valgt satellit: {self.selected_satellite['SatName']}")
-            
-        except Exception as e:
-            messagebox.showerror("Fejl", f"Kunne ikke hente satellit information: {str(e)}")
+        """Wrapper: Henter den valgte satellit fra satellitlisten"""
+        from Func_Leapfrog import get_selected_satellite as func
+        return func(self)
     
     def get_full_tle_from_selection(self, item):
-        """Henter fulde TLE linjer fra den valgte satellit"""
-        try:
-            # Find den fulde TLE fra df_merged baseret på valgte række
-            item_values = self.satellite_tree.item(item, 'values')
-            sat_name = item_values[0]
-            norad_id = item_values[1]
-            
-            # Find satellitten i df_merged
-            mask = (self.df_merged['SatName'] == sat_name) & (self.df_merged['NORAD'].astype(str) == str(norad_id))
-            satellite_row = self.df_merged[mask].iloc[0]
-            
-            return satellite_row['TLE1'], satellite_row['TLE2']
-            
-        except Exception as e:
-            self.log_message(f"Fejl ved hentning af TLE: {str(e)}")
-            return None, None
+        """Wrapper: Henter fulde TLE linjer fra den valgte satellit"""
+        from Func_Leapfrog import get_full_tle_from_selection as func
+        return func(self, item)
     
     def calculate_leapfrog_data(self):
-        """Beregner LeapFrog data baseret på valgt satellit"""
-        try:
-            if not hasattr(self, 'selected_satellite'):
-                messagebox.showwarning("Ingen satellit", "Vælg først en satellit")
-                return
-            
-            self.log_message("Beregner LeapFrog data...")
-            
-            # Hent koordinater og UTC offset fra satellit tab
-            lat = float(self.lat_entry.get())
-            lng = float(self.lng_entry.get())
-            ele = float(self.ele_entry.get())
-            utc_offset = float(self.utc_offset_entry.get())
-            
-            # Hent og valider interval mellem observationer
-            try:
-                interval_between_obs = float(self.leapfrog_interval_entry.get())
-                if interval_between_obs <= 0 or interval_between_obs > 300:
-                    messagebox.showerror("Ugyldig interval", "Interval mellem observationer skal være mellem 0.1 og 300 sekunder")
-                    return
-            except ValueError:
-                messagebox.showerror("Ugyldig interval", "Interval skal være et gyldigt tal")
-                return
-            
-            # Parse TLE og tider
-            satellite_name = self.selected_satellite['SatName']
-            satellite_id = self.selected_satellite['NORAD']
-            start_time_str = self.selected_satellite['StartTime']
-            end_time_str = self.selected_satellite['EndTime']
-            tle_line1 = self.selected_satellite['TLE1']
-            tle_line2 = self.selected_satellite['TLE2']
-            
-            # Beregn tidsintervaller - konverter til UTC for satellit beregninger
-            today = datetime.now().date()
-            # Start- og sluttider er allerede i lokal tid (med UTC offset), så vi konverterer til UTC
-            # Håndter både HH:MM og HH:MM:SS formater
-            try:
-                start_tid_local = datetime.combine(today, datetime.strptime(start_time_str, "%H:%M:%S").time())
-            except ValueError:
-                start_tid_local = datetime.combine(today, datetime.strptime(start_time_str, "%H:%M").time())
-            
-            try:
-                slut_tid_local = datetime.combine(today, datetime.strptime(end_time_str, "%H:%M:%S").time())
-            except ValueError:
-                slut_tid_local = datetime.combine(today, datetime.strptime(end_time_str, "%H:%M").time())
-            
-            # Konverter til UTC ved at trække UTC offset fra
-            start_tid_utc = start_tid_local - timedelta(hours=utc_offset)
-            slut_tid_utc = slut_tid_local - timedelta(hours=utc_offset)
-            
-            # Hent interval mellem observationer fra UI
-            interval_between_obs = float(self.leapfrog_interval_entry.get())
-            
-            # Opret tidsintervaller baseret på brugervalgt interval i UTC
-            tidspunkter_utc = [start_tid_utc + timedelta(seconds=i*interval_between_obs) for i in range(int((slut_tid_utc-start_tid_utc).total_seconds()/interval_between_obs)+1)]
-            
-            # Opret DataFrame med UTC tider for satellit beregninger
-            self.df_leapfrog = pd.DataFrame({"DATE-OBS": [dt.strftime("%Y-%m-%d %H:%M:%S.%f") for dt in tidspunkter_utc]})
-            self.df_leapfrog["LAT--OBS"] = lat
-            self.df_leapfrog["LONG-OBS"] = lng
-            self.df_leapfrog["ELEV-OBS"] = ele
-            
-            # Beregn satellit positioner (bruger UTC tider)
-            afstand, vinkel, sat_pos, earth_pos, obs_points = calculate_satellite_data(self.df_leapfrog, tle_line1, tle_line2)
-            sat_positions = np.array(sat_pos)
-            obs_points = np.array(obs_points)
-            
-            # Beregn retning til satellit
-            x_list = sat_positions[:,0] - obs_points[:,0]
-            y_list = sat_positions[:,1] - obs_points[:,1]
-            z_list = sat_positions[:,2] - obs_points[:,2]
-            
-            ra_tle, dec_tle = np.vectorize(self.xyz_to_radec)(x_list, y_list, z_list)
-            self.df_leapfrog['Sat_RA'] = ra_tle
-            self.df_leapfrog['Sat_DEC'] = dec_tle
-            
-            # Konverter RA til timer format
-            self.df_leapfrog['Sat_RA_Hr'] = self.ra_deg_to_hms(ra_tle)
-            
-            # Beregn Alt/Az (bruger UTC tider)
-            alt_list, az_list = self.tle_to_altaz(tle_line1, tle_line2, lat, lng, ele, tidspunkter_utc)
-            self.df_leapfrog['Sat_Alt'] = alt_list
-            self.df_leapfrog['Sat_Az'] = az_list
-            
-            # Konverter DATE-OBS tilbage til lokal tid for visning
-            self.df_leapfrog['DATE-OBS'] = [(datetime.strptime(dt, "%Y-%m-%d %H:%M:%S.%f") + timedelta(hours=utc_offset)).strftime("%Y-%m-%d %H:%M:%S.%f") for dt in self.df_leapfrog['DATE-OBS']]
-            
-            # Beregn XYZ for plotting
-            xyz = [ra_dec_to_eci(ra, dec, r) + obs for ra, dec, r, obs in zip(self.df_leapfrog['Sat_RA'], self.df_leapfrog['Sat_DEC'], afstand, obs_points)]
-            self.df_leapfrog['xyz'] = xyz
-            
-            # Gem data til plotting
-            self.sat_positions = sat_positions
-            self.obs_points = obs_points
-            self.afstand = afstand
-            self.utc_offset = utc_offset  # Gem til senere brug
-            
-            # Opdater tabel
-            self.update_leapfrog_table()
-            
-            self.log_message(f"LeapFrog data beregnet for {len(self.df_leapfrog)} punkter (interval: {interval_between_obs}s, UTC offset: {utc_offset} timer)")
-            
-        except Exception as e:
-            self.log_message(f"Fejl ved beregning: {str(e)}")
-            messagebox.showerror("Fejl", f"Kunne ikke beregne LeapFrog data: {str(e)}")
+        """Wrapper: Beregner LeapFrog data baseret på valgt satellit"""
+        from Func_Leapfrog import calculate_leapfrog_data as func
+        return func(self)
     
     def xyz_to_radec(self, x, y, z):
-        """Konverter XYZ til RA/DEC"""
-        r = np.array([x, y, z], dtype=float)
-        norm = np.linalg.norm(r)
-        if norm == 0:
-            raise ValueError("Vector has zero length")
-        ra_rad = np.arctan2(r[1], r[0]) % (2*np.pi)
-        dec_rad = np.arcsin(r[2]/norm)
-        return np.degrees(ra_rad), np.degrees(dec_rad)
+        """Wrapper: Konverter XYZ til RA/DEC"""
+        from Func_Leapfrog import xyz_to_radec as func
+        return func(x, y, z)
     
     def ra_deg_to_hms(self, ra_deg_array):
-        """Konverter RA grader til HH:MM:SS format"""
-        RA_hours = ra_deg_array / 15
-        hours = np.floor(RA_hours).astype(int)
-        minutes = np.floor((RA_hours - hours)*60).astype(int)
-        seconds = ((RA_hours - hours)*60 - minutes)*60
-        return [f"{h:02d}:{m:02d}:{s:06.3f}" for h, m, s in zip(hours, minutes, seconds)]
+        """Wrapper: Konverter RA grader til HH:MM:SS format"""
+        from Func_Leapfrog import ra_deg_to_hms as func
+        return func(ra_deg_array)
     
     def tle_to_altaz(self, tle1, tle2, observer_lat, observer_lon, observer_ele, datetime_list, name="SAT"):
-        """Beregn Alt/Az fra TLE"""
-        ts = load.timescale()
-        satellite = EarthSatellite(tle1, tle2, name)
-        observer = Topos(latitude_degrees=observer_lat, longitude_degrees=observer_lon, elevation_m=observer_ele)
-        alt_list, az_list = [], []
-        for dt in datetime_list:
-            t = ts.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second + dt.microsecond/1e6)
-            topocentric = (satellite - observer).at(t)
-            alt, az, _ = topocentric.altaz()
-            alt_list.append(alt.degrees)
-            az_list.append(az.degrees)
-        return alt_list, az_list
+        """Wrapper: Beregn Alt/Az fra TLE"""
+        from Func_Leapfrog import tle_to_altaz as func
+        return func(self, tle1, tle2, observer_lat, observer_lon, observer_ele, datetime_list, name)
     
     def update_leapfrog_table(self):
-        """Opdater LeapFrog data tabel"""
-        # Ryd tidligere data
-        for item in self.leapfrog_tree.get_children():
-            self.leapfrog_tree.delete(item)
-        
-        if self.df_leapfrog is not None:
-            for _, row in self.df_leapfrog.iterrows():
-                values = (
-                    row['DATE-OBS'],
-                    f"{row['Sat_DEC']:.4f}°",
-                    row['Sat_RA_Hr'],
-                    f"{row['Sat_Alt']:.2f}°",
-                    f"{row['Sat_Az']:.2f}°"
-                )
-                self.leapfrog_tree.insert('', 'end', values=values)
+        """Wrapper: Opdater LeapFrog data tabel"""
+        from Func_Leapfrog import update_leapfrog_table as func
+        return func(self)
     
     def show_leapfrog_plot(self):
-        """Vis 3D plot af LeapFrog data"""
-        if not PLOTLY_AVAILABLE:
-            messagebox.showerror("Fejl", "Plotly er ikke installeret")
-            return
-        
-        if self.df_leapfrog is None:
-            messagebox.showwarning("Ingen data", "Beregn først LeapFrog data")
-            return
-        
-        try:
-            # Jordens radius i km
-            earth_radius = 6371
-            
-            # Opret en kugle for Jorden
-            u, v = np.mgrid[0:2*np.pi:100j, 0:np.pi:50j]
-            x = earth_radius * np.cos(u) * np.sin(v)
-            y = earth_radius * np.sin(u) * np.sin(v)
-            z = earth_radius * np.cos(v)
-            
-            # Opret figuren
-            fig = go.Figure()
-            
-            # Plot satellitens bane
-            fig.add_trace(go.Scatter3d(
-                x=self.sat_positions[:, 0],
-                y=self.sat_positions[:, 1],
-                z=self.sat_positions[:, 2],
-                mode='lines',
-                name='Satellitbane',
-                line=dict(color='blue', width=2)
-            ))
-            
-            # Plot observationspunkter
-            fig.add_trace(go.Scatter3d(
-                x=self.obs_points[:, 0],
-                y=self.obs_points[:, 1],
-                z=self.obs_points[:, 2],
-                mode='markers',
-                name='Observationspunkt',
-                marker=dict(size=1, color='red')
-            ))
-            
-            # Plot Jorden som en kugle
-            fig.add_trace(go.Surface(
-                x=x, y=y, z=z,
-                colorscale='Blues',
-                opacity=0.5,
-                showscale=False,
-                name='Jorden'
-            ))
-            
-            # Tilføj punkterne fra teleskop retning
-            fig.add_trace(go.Scatter3d(
-                x=self.df_leapfrog['xyz'].apply(lambda xyz: xyz[0]),
-                y=self.df_leapfrog['xyz'].apply(lambda xyz: xyz[1]),
-                z=self.df_leapfrog['xyz'].apply(lambda xyz: xyz[2]),
-                mode='markers',
-                name='Teleskop retning',
-                marker=dict(size=3, color='green', opacity=0.6)
-            ))
-            
-            # Tilføj akseetiketter og titel
-            fig.update_layout(
-                scene=dict(
-                    xaxis_title='X (km)',
-                    yaxis_title='Y (km)',
-                    zaxis_title='Z (km)',
-                ),
-                title='LeapFrog Satellitbane og observationspunkt i ECI-koordinatsystemet',
-                showlegend=True
-            )
-            
-            # Vis plottet
-            pyo.plot(fig, filename='leapfrog_plot.html', auto_open=True)
-            
-            self.log_message("3D plot genereret og åbnet i browser")
-            
-        except Exception as e:
-            self.log_message(f"Fejl ved plotting: {str(e)}")
-            messagebox.showerror("Fejl", f"Kunne ikke generere plot: {str(e)}")
+        """Wrapper: Vis 3D plot af LeapFrog data"""
+        from Func_Leapfrog import show_leapfrog_plot as func
+        return func(self)
     
     def start_leapfrog_observation(self):
-        """Start LeapFrog observation i separat tråd"""
-        if self.df_leapfrog is None:
-            messagebox.showwarning("Ingen data", "Beregn først LeapFrog data")
-            return
-        
-        if self.leapfrog_observation_running:
-            messagebox.showwarning("Observation kører", "En observation kører allerede")
-            return
-            
-        # Tjek kamera tilgængelighed først
-        camera = self.get_camera_for_observation()
-        if camera is None:
-            messagebox.showerror("Kamera ikke tilgængelig", 
-                               "Moravian kamera ikke tilsluttet eller ikke tilgængeligt.\n\n"
-                               "Tilslut kameraet i kameraindstillinger først.\n"
-                               "Sørg for at Moravian SDK er installeret og kameraet er forbundet.")
-            return
-        
-        # Tjek PWI4 tilgængelighed for teleskop
-        if not PWI4_AVAILABLE:
-            messagebox.showerror("PWI4 bibliotek ikke tilgængelig", 
-                               "PWI4 bibliotek ikke installeret.\n\n"
-                               "Sørg for at pwi4_client.py er tilgængelig i samme mappe som GUI.py")
-            return
-        
-        # Tjek om observation er startet for sent
-        current_time = datetime.now()
-        utc_offset = getattr(self, 'utc_offset', 2)
-        df_work = self.df_leapfrog.copy()
-        
-        # DATE-OBS er nu i lokal tid (efter konvertering i calculate_leapfrog_data)
-        df_work['DATE-OBS'] = pd.to_datetime(df_work['DATE-OBS'])
-        
-        # Find hvor mange punkter der er passeret - sammenlign lokal tid med lokal tid
-        passed_points = 0
-        for _, row in df_work.iterrows():
-            planned_time_local = row['DATE-OBS']  # Dette er allerede i lokal tid
-            if planned_time_local < current_time:
-                passed_points += 1
-            else:
-                break
-        
-        if passed_points > 0:
-            remaining_points = len(df_work) - passed_points
-            if remaining_points == 0:
-                messagebox.showerror("For sent", "Alle observationspunkter er allerede passeret!")
-                return
-            else:
-                result = messagebox.askyesno(
-                    "Observation startet sent", 
-                    f"{passed_points} af {len(df_work)} punkter er allerede passeret.\n"
-                    f"Vil du fortsætte med de resterende {remaining_points} punkter?"
-                )
-                if not result:
-                    return
-        
-        # Skift knap tilstande
-        self.start_obs_btn.config(state='disabled')
-        self.stop_obs_btn.config(state='normal')
-        
-        # Start observation i separat tråd
-        self.stop_observation = False
-        threading.Thread(target=self.run_leapfrog_observation, daemon=True).start()
+        """Wrapper: Start LeapFrog observation i separat tråd"""
+        from Func_Leapfrog import start_leapfrog_observation as func
+        return func(self)
     
     def stop_leapfrog_observation(self):
-        """Stop LeapFrog observation"""
-        self.stop_observation = True
-        self.log_message("Stop signal sendt...")
+        """Wrapper: Stop LeapFrog observation"""
+        from Func_Leapfrog import stop_leapfrog_observation as func
+        return func(self)
     
     def wait_until(self, target_time):
-        """Vent til det ønskede tidspunkt - springer over hvis tiden allerede er passeret"""
-        current_time = datetime.now()
-        if target_time <= current_time:
-            # Tiden er allerede passeret, venter ikke
-            return
-        
-        while datetime.now() < target_time and not self.stop_observation:
-            time.sleep(0.05)
+        """Wrapper: Vent til det ønskede tidspunkt"""
+        from Func_Leapfrog import wait_until as func
+        return func(self, target_time)
     
     def hms_to_hours(self, hms_str):
-        """Konverter RA HH:MM:SS.sss til decimal timer."""
-        h, m, s = map(float, hms_str.split(":"))
-        return h + m/60 + s/3600
+        """Wrapper: Konverter RA HH:MM:SS.sss til decimal timer"""
+        from Func_Leapfrog import hms_to_hours as func
+        return func(self, hms_str)
     
     def run_leapfrog_observation(self):
-        """Kør LeapFrog observation"""
-        try:
-            self.leapfrog_observation_running = True
-            self.log_message("Starter LeapFrog observation...")
-            
-            # Kør rigtig observation med PWI4
-            if PWI4_AVAILABLE:
-                self._execute_leapfrog_observation()
-            else:
-                self.log_message("FEJL: PWI4 bibliotek ikke tilgængeligt")
-                self.log_message("Installer pwi4_client.py i samme mappe som GUI.py")
-                raise Exception("PWI4 bibliotek ikke installeret - kan ikke køre observation")
-                
-        except Exception as e:
-            self.log_message(f"Fejl under observation: {str(e)}")
-        finally:
-            self.leapfrog_observation_running = False
-            self.start_obs_btn.config(state='normal')
-            self.stop_obs_btn.config(state='disabled')
-            self.log_message("Observation afsluttet")
+        """Wrapper: Kør LeapFrog observation"""
+        from Func_Leapfrog import run_leapfrog_observation as func
+        return func(self)
     
     def _execute_leapfrog_observation(self):
-        """Kør rigtig observation med PWI4"""
-        try:
-            # Hent parametre (binning fra kameraindstillinger)
-            x_binning = self.camera_binning_x.get()
-            y_binning = self.camera_binning_y.get()
-            pw4_url = self.leapfrog_pw4_url_entry.get().strip()
-            exposure_time = float(self.leapfrog_exposure_time_entry.get())
-            interval_between_obs = float(self.leapfrog_interval_entry.get())
-            
-            # Hent kamera timing parametre
-            camera_start_before = float(self.leapfrog_camera_start_entry.get())
-            camera_stop_after = float(self.leapfrog_camera_stop_entry.get())
-            slew_delay = float(self.leapfrog_slew_delay_entry.get())
-            
-            # Valider parametre
-            if x_binning < 1 or y_binning < 1 or x_binning > 16 or y_binning > 16:
-                messagebox.showerror("Ugyldig binning", "Binning skal være mellem 1 og 16")
-                return
-            
-            if exposure_time <= 0 or exposure_time > 60:
-                messagebox.showerror("Ugyldig exposure time", "Exposure time skal være mellem 0.1 og 60 sekunder")
-                return
-                
-            if interval_between_obs < 0 or interval_between_obs > 300:
-                messagebox.showerror("Ugyldig interval", "Interval mellem observationer skal være mellem 0 og 300 sekunder")
-                return
-                
-            if camera_start_before < 0 or camera_start_before > 30:
-                messagebox.showerror("Ugyldig kamera start tid", "Kamera start tid skal være mellem 0 og 30 sekunder")
-                return
-                
-            if camera_stop_after < 0 or camera_stop_after > 30:
-                messagebox.showerror("Ugyldig kamera stop tid", "Kamera stop tid skal være mellem 0 og 30 sekunder")
-                return
-                
-            if slew_delay < 0 or slew_delay > 10:
-                messagebox.showerror("Ugyldig slew delay", "Slew delay skal være mellem 0 og 10 sekunder")
-                return
-            
-            # Opret mappe struktur
-            sat_name = self.selected_satellite['SatName']
-            norad_id = self.selected_satellite['NORAD']
-            session_date = datetime.now().strftime("%m_%d")
-            
-            # Rens satellit navn for filsystem
-            safe_sat_name = "".join(c for c in sat_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            safe_sat_name = safe_sat_name.replace(' ', '_')
-            
-            session_dir = os.path.join(os.getcwd(), f"LeapFrog_{safe_sat_name}_{norad_id}_{session_date}")
-            os.makedirs(session_dir, exist_ok=True)
-            
-            self.log_message(f"Satellit: {sat_name}")
-            self.log_message(f"Binning: {x_binning}x{y_binning}")
-            self.log_message(f"Session mappe: {session_dir}")
-            
-            # Tilslut teleskop og kamera
-            self.log_message("Tilslutter teleskop og kamera...")
-            
-            # PWI4 teleskop forbindelse
-            if not PWI4_AVAILABLE:
-                raise Exception("PWI4 bibliotek ikke tilgængeligt for teleskop kontrol")
-            
-            telescope = PWI4Telescope(host=pw4_url.replace("http://", "").split(":")[0], 
-                                     port=int(pw4_url.split(":")[-1]) if ":" in pw4_url else 8220)
-            
-            if not telescope.test_connection():
-                raise Exception(f"Kan ikke forbinde til PWI4 på {pw4_url}")
-            
-            telescope.connect()
-            self.log_message(f"PWI4 teleskop tilsluttet succesfuldt")
-            
-            # Kamera forbindelse (nu via Moravian)
-            camera = self.get_camera_for_observation()
-            if camera is None:
-                raise Exception("Moravian kamera ikke tilsluttet eller ikke tilgængeligt.\n\nTilslut kameraet i kameraindstillinger først.")
-            
-            # Sæt kamera parametre med binning
-            camera.set_binning(x_binning, y_binning)
-            
-            # Professionel kamera konfiguration for Moravian kameraer
-            info = camera.get_camera_info()
-            camera_desc = info.get('description', 'Moravian Camera')
-            ccd_width = info.get('width', 0)
-            ccd_height = info.get('height', 0)
-            
-            self.log_message(f"Konfigurerer kamera: {camera_desc}")
-            self.log_message(f"CCD størrelse: {ccd_width} x {ccd_height} pixels")
-            self.log_message(f"Binning sat til: {x_binning}x{y_binning}")
-            
-            # Beregn korrekt billedstørrelse baseret på binning
-            image_width = ccd_width // x_binning
-            image_height = ccd_height // y_binning
-            
-            self.log_message(f"Beregnet billedstørrelse: {image_width}x{image_height} pixels")
-            
-            # Verificer binning
-            max_binning_x = info.get('max_binning_x', 8)
-            max_binning_y = info.get('max_binning_y', 8)
-            
-            if x_binning > max_binning_x or y_binning > max_binning_y:
-                raise Exception(f"Binning {x_binning}x{y_binning} overstiger kamera max: {max_binning_x}x{max_binning_y}")
-            
-            self.log_message(f"Kamera konfiguration bekræftet:")
-            self.log_message(f"  Binning: {camera.bin_x}x{camera.bin_y}")
-            self.log_message(f"  Billedstørrelse: {image_width}x{image_height} pixels")
-            
-            # Temperatur info
-            current_temp = info.get('temperature', None)
-            if current_temp is not None:
-                self.log_message(f"  Kamera temperatur: {current_temp:.1f}°C")
-            
-            # Konverter DATE-OBS til datetime
-            df_work = self.df_leapfrog.copy()
-            df_work['DATE-OBS'] = pd.to_datetime(df_work['DATE-OBS'])
-            
-            # Tjek om observation er startet for sent
-            current_time = datetime.now()
-            utc_offset = getattr(self, 'utc_offset', 2)
-            
-            # Find det første punkt der er efter nuværende tid
-            start_index = 0
-            for i, row in df_work.iterrows():
-                planned_time_local = row['DATE-OBS']  # Dette er allerede i lokal tid
-                if planned_time_local > current_time:
-                    start_index = i
-                    break
-            else:
-                # Alle punkter er passeret
-                self.log_message("ADVARSEL: Alle observationspunkter er passeret! Observationen springer over.")
-                return
-            
-            if start_index > 0:
-                self.log_message(f"Springer over de første {start_index} punkter (allerede passeret)")
-            
-            # Gennemløb af alle punkter fra start_index
-            for i, row in df_work.iloc[start_index:].iterrows():
-                if self.stop_observation:
-                    self.log_message("Observation stoppet af bruger")
-                    break
-                
-                ra_str = row['Sat_RA_Hr']
-                dec = float(row['Sat_DEC'])
-                planned_time = row['DATE-OBS']  # Dette er i lokal tid
-                
-                # Beregn tider i lokal tid med brugervalgte værdier
-                camera_start_time = planned_time - timedelta(seconds=camera_start_before)
-                camera_stop_time = planned_time + timedelta(seconds=camera_stop_after)
-                slew_next_time = camera_stop_time + timedelta(seconds=slew_delay)
-                
-                # Konverter RA til decimal timer
-                ra_hours = self.hms_to_hours(ra_str)
-                
-                self.log_message(f"Punkt {i+1}/{len(df_work)}: Planlægger slew til RA: {ra_str} ({ra_hours:.6f} timer), DEC: {dec:.6f} grader")
-                
-                # Slew til position ved hjælp af PWI4
-                telescope.slew_to_coordinates(ra_hours, dec, coord_type="j2000")
-                
-                # Vent på slew færdig
-                while telescope.is_slewing() and not self.stop_observation:
-                    time.sleep(0.1)
-                
-                if self.stop_observation:
-                    break
-                
-                self.log_message(f"Slew færdig. Venter til kamera starttid: {camera_start_time}")
-                
-                # Vent og start kamera
-                self.wait_until(camera_start_time)
-                if self.stop_observation:
-                    break
-                
-                self.log_message("Starter eksponering")
-                
-                # Start eksponering
-                current_time = datetime.now()
-                image_counter = 1
-                
-                while current_time < camera_stop_time and not self.stop_observation:
-                    if current_time + timedelta(seconds=exposure_time) > camera_stop_time:
-                        break
-                    
-                    try:
-                        # *** OPTIMERET LEAPFROG EKSPONERING ***
-                        leapfrog_result = self.optimized_camera_exposure_with_timing(
-                            camera=camera, 
-                            exposure_time=exposure_time, 
-                            pw4_client=telescope,
-                            pw4_url=pw4_url,
-                            obstype='LeapFrog'
-                        )
-                        
-                        if leapfrog_result is None:  # Afbrudt af bruger
-                            break
-                        
-                        # Udpak resultater fra optimeret timing
-                        image_data = leapfrog_result['image_data']
-                        exposure_start_time = leapfrog_result['exposure_start_time']
-                        exposure_end_time = leapfrog_result['exposure_end_time']
-                        pw4_status = leapfrog_result['pw4_status']
-                        
-                        self.log_message(f"LeapFrog timing nøjagtighed: {leapfrog_result['timing_accuracy']:.1f}ms")
-                        
-                        if self.stop_observation:
-                            break
-                        
-                        # Hent filter information
-                        filter_name = self.get_current_filter_name()
-                        
-                        # Opret FITS header med standard metode
-                        header = self.create_standard_fits_header(
-                            obstype='LeapFrog',
-                            sat_name=sat_name,
-                            exposure_start_time=exposure_start_time,
-                            exposure_end_time=exposure_end_time,
-                            exposure_time=exposure_time,
-                            tle1=self.selected_satellite['TLE1'],
-                            tle2=self.selected_satellite['TLE2'],
-                            norad_id=self.selected_satellite['NORAD'],
-                            camera=camera,
-                            pw4_status=pw4_status,
-                            ra_hours=ra_hours,
-                            dec_degrees=dec,
-                            alt_degrees=row.get('Sat_Alt', 0),
-                            az_degrees=row.get('Sat_Az', 0),
-                            image_width=image_data.shape[1],
-                            image_height=image_data.shape[0],
-                            filter_name=filter_name
-                        )
-                        
-                        # Gem FITS fil med komplet header
-                        timestamp = datetime.now().strftime("%H%M%S")
-                        filename = f"LeapFrog_{safe_sat_name}_{norad_id}_{timestamp}_{image_counter:03d}.fits"
-                        filepath = os.path.join(session_dir, filename)
-                        
-                        # Konverter til uint16 for FITS
-                        image_data_uint16 = image_data.astype(np.uint16)
-                        
-                        hdu = fits.PrimaryHDU(data=image_data_uint16, header=header)
-                        hdu.writeto(filepath, overwrite=True)
-                        
-                        self.log_message(f"Billede {image_counter} gemt: {filename}")
-                        image_counter += 1
-                        
-                    except Exception as e:
-                        self.log_message(f"Fejl ved tag af billede {image_counter}: {str(e)}")
-                    
-                    current_time = datetime.now()
-                
-                # Hvis der er flere punkter, planlæg næste slew
-                if i < len(df_work) - 1:
-                    self.log_message(f"Venter til næste slew tid: {slew_next_time}")
-                    self.wait_until(slew_next_time)
-            
-            self.log_message("LeapFrog observation færdig!")
-            
-        except Exception as e:
-            self.log_message(f"Observation fejl: {str(e)}")
-        finally:
-            try:
-                if 'telescope' in locals():
-                    telescope.park()
-                    self.log_message("PWI4 teleskop afbrudt")
-            except Exception as e:
-                self.log_message(f"Fejl ved afbrydelse af teleskop: {str(e)}")
-            
-            self.log_message("LeapFrog observation afsluttet")
+        """Wrapper: Kør rigtig observation med PWI4"""
+        from Func_Leapfrog import _execute_leapfrog_observation as func
+        return func(self)
     
 
     # =================
