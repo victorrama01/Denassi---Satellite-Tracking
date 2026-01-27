@@ -789,7 +789,32 @@ def optimized_camera_exposure_with_timing(self, camera, exposure_time, pw4_clien
         self.tracking_log_message(f"Kamera start delay: {start_delay*1000:.1f}ms")
     
     # Præcis venting til midtertidspunkt
-    pw4_status = None
+    # Initialize default pw4_status structure
+    pw4_status = {
+        'mount': {
+            'ra_apparent_hours': 0.0,
+            'dec_apparent_degs': 0.0,
+            'ra_j2000_hours': 0.0,
+            'dec_j2000_degs': 0.0,
+            'ra_apparent_degs': 0.0,
+            'ra_j2000_degs': 0.0,
+            'is_slewing': False,
+            'is_tracking': False,
+            'altitude_degs': 0.0,
+            'azimuth_degs': 0.0,
+            'julian_date': 0.0,
+            'distance_to_sun_degs': 0.0,
+            'field_angle_degs': 0.0
+        },
+        'site': {
+            'latitude_degs': 0.0,
+            'longitude_degs': 0.0,
+            'height_meters': 0.0
+        },
+        'pwi4': {
+            'version': 'PWI4 HTTP API'
+        }
+    }
     timing_accuracy = 0.0
     
     while datetime.utcnow() < adjusted_mid_time:
