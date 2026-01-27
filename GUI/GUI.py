@@ -1691,42 +1691,142 @@ class TkinterDemo:
     def fetch_active_tles(self, username, password):
         """Henter alle aktive TLE'er fra Space-Track"""
         LOGIN_URL = "https://www.space-track.org/ajaxauth/login"
-        TLE_URL = (
-            "https://www.space-track.org/basicspacedata/query/"
-            "class/tle_latest/ORDINAL/1/orderby/NORAD_CAT_ID ASC/format/tle"
-        )
         
-        with requests.Session() as session:
-            login_data = {"identity": username, "password": password}
-            resp = session.post(LOGIN_URL, data=login_data)
-            if resp.status_code != 200:
-                raise Exception(f"Login fejlede ({resp.status_code})")
-
-            tle_resp = session.get(TLE_URL)
-            if tle_resp.status_code != 200:
-                raise Exception(f"Kunne ikke hente TLE'er ({tle_resp.status_code})")
-
-            lines = [line.strip() for line in tle_resp.text.splitlines() if line.strip()]
-            
-            tle_data = []
-            for i in range(0, len(lines), 2):
-                if i + 1 < len(lines):
-                    line1 = lines[i].strip()
-                    line2 = lines[i + 1].strip()
-                    
-                    if line1.startswith('1 ') and line2.startswith('2 '):
-                        norad_id = line1[2:7].strip()
-                        name = f"NORAD-{norad_id}"
+        # Prøv flere forskellige API endpoints i prioriteret rækkefølge
+        TLE_URLS = [
+            # GP (General Perturbations) data - ofte mere stabilt
+            "https://www.space-track.org/basicspacedata/query/class/gp/EPOCH/>now-14/orderby/NORAD_CAT_ID/format/json",
+            # TLE Latest uden filter
+            "https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/format/json",
+            # TLE Latest med limit
+            "https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/limit/50000/format/json",
+            # 3LE format (alternativ)
+            "https://www.space-track.org/basicspacedata/query/class/tle_latest/ORDINAL/1/format/3le"
+        ]
+        
+        try:
+            with requests.Session() as session:
+                # Login med credentials
+                login_data = {"identity": username, "password": password}
+                self.log_satellite_message(f"Logger ind på Space-Track som {username}...")
+                
+                resp = session.post(LOGIN_URL, data=login_data, timeout=30)
+                
+                if resp.status_code != 200:
+                    raise Exception(f"Login fejlede med HTTP {resp.status_code}")
+                
+                # Tjek om login faktisk lykkedes ved at kigge på response
+                if "error" in resp.text.lower() or "invalid" in resp.text.lower():
+                    raise Exception("Login fejlede - check brugernavn og password")
+                
+                # Tjek om vi har en session cookie
+                if not session.cookies:
+                    self.log_satellite_message("⚠️ Ingen session cookies - login kan have fejlet")
+                else:
+                    self.log_satellite_message(f"✅ Login succesfuldt (cookies: {len(session.cookies)})")
+                
+                # Prøv hver URL i rækkefølge
+                tle_resp = None
+                successful_url = None
+                
+                for i, url in enumerate(TLE_URLS):
+                    try:
+                        self.log_satellite_message(f"Prøver API endpoint {i+1}/{len(TLE_URLS)}...")
+                        tle_resp = session.get(url, timeout=90)
                         
-                        tle_data.append({
-                            'Name': name,
-                            'NORAD_ID': norad_id,
-                            'TLE1': line1, 
-                            'TLE2': line2
-                        })
-
-            return pd.DataFrame(tle_data)
-    
+                        if tle_resp.status_code == 200 and tle_resp.text and tle_resp.text.strip():
+                            successful_url = url
+                            self.log_satellite_message(f"✅ Succesfuld forbindelse til endpoint {i+1}")
+                            break
+                        else:
+                            self.log_satellite_message(f"❌ Endpoint {i+1} fejlede (HTTP {tle_resp.status_code})")
+                    except Exception as url_err:
+                        self.log_satellite_message(f"❌ Endpoint {i+1} fejl: {str(url_err)[:50]}")
+                        continue
+                
+                # Hvis ingen URL'er virkede
+                if not successful_url or not tle_resp or tle_resp.status_code != 200:
+                    raise Exception(
+                        "Alle Space-Track API endpoints fejlede. "
+                        "Mulige årsager: 1) Forkert login 2) Space-Track nede 3) Rate limit nået. "
+                        "Prøv igen om få minutter eller check https://www.space-track.org"
+                    )
+                
+                # Parse response baseret på format
+                if not tle_resp.text or tle_resp.text.strip() == "":
+                    raise Exception("Tom response fra Space-Track")
+                
+                tle_data = []
+                
+                # Tjek om det er JSON eller 3LE format
+                if "format/json" in successful_url:
+                    # JSON format
+                    try:
+                        tle_json = tle_resp.json()
+                    except Exception as json_err:
+                        raise Exception(f"Kunne ikke parse JSON: {json_err}")
+                    
+                    if not tle_json or len(tle_json) == 0:
+                        raise Exception("Tom JSON array modtaget")
+                    
+                    self.log_satellite_message(f"Modtaget {len(tle_json)} objekter fra Space-Track")
+                    
+                    # Parse JSON entries
+                    for entry in tle_json:
+                        try:
+                            norad_id = str(entry.get('NORAD_CAT_ID', '')).strip()
+                            object_name = entry.get('OBJECT_NAME', f"NORAD-{norad_id}")
+                            tle_line1 = entry.get('TLE_LINE1', '').strip()
+                            tle_line2 = entry.get('TLE_LINE2', '').strip()
+                            
+                            # Valider TLE linjer
+                            if (tle_line1.startswith('1 ') and tle_line2.startswith('2 ') and 
+                                norad_id and len(tle_line1) >= 69 and len(tle_line2) >= 69):
+                                
+                                tle_data.append({
+                                    'Name': object_name,
+                                    'NORAD_ID': norad_id,
+                                    'TLE1': tle_line1,
+                                    'TLE2': tle_line2
+                                })
+                        except Exception:
+                            continue
+                
+                else:
+                    # 3LE format (3 linjer: navn, line1, line2)
+                    lines = [line.strip() for line in tle_resp.text.splitlines() if line.strip()]
+                    self.log_satellite_message(f"Modtaget {len(lines)} linjer i 3LE format")
+                    
+                    i = 0
+                    while i < len(lines) - 2:
+                        name = lines[i]
+                        line1 = lines[i + 1]
+                        line2 = lines[i + 2]
+                        
+                        if line1.startswith('1 ') and line2.startswith('2 '):
+                            norad_id = line1[2:7].strip()
+                            tle_data.append({
+                                'Name': name,
+                                'NORAD_ID': norad_id,
+                                'TLE1': line1,
+                                'TLE2': line2
+                            })
+                            i += 3
+                        else:
+                            i += 1
+                
+                if len(tle_data) == 0:
+                    raise Exception("Ingen gyldige TLE'er kunne parses fra Space-Track data")
+                
+                self.log_satellite_message(f"✅ Parsede {len(tle_data)} gyldige TLE'er")
+                return pd.DataFrame(tle_data)
+                
+        except requests.exceptions.Timeout:
+            raise Exception("Timeout - Space-Track.org svarer ikke (prøv igen senere)")
+        except requests.exceptions.ConnectionError:
+            raise Exception("Ingen internet forbindelse til Space-Track.org")
+        except Exception as e:
+            raise Exception(f"Space-Track fejl: {str(e)}")
     def fetch_satellite_data_selenium(self, date, lat=55.781553, lng=12.514595, period='morning'):
         """Henter satellitdata fra Heavens-Above"""
         options = webdriver.ChromeOptions()
