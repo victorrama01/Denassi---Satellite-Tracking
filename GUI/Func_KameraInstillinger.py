@@ -1,6 +1,9 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime, timedelta
+import time
+import requests
+import numpy as np
 
 def log_camera_message(self, message):
     """Tilføj besked til kamera loggen med tidsstempel"""
@@ -764,3 +767,145 @@ def create_kameraindstillinger_tab(self, notebook):
     # Tilføj en velkomst besked til kamera loggen
     self.camera_log_text.insert(tk.END, "Kamera Log startet...\n")
     self.camera_log_text.insert(tk.END, "Klar til kamera operationer.\n\n")
+
+
+def optimized_camera_exposure_with_timing(self, camera, exposure_time, pw4_client, pw4_url, obstype='satellite'):
+    """Optimeret kamera eksponering med præcise tidsstempler og PWI4 status hentning."""
+    # Pre-beregn præcise tidspunkter baseret på computerur
+    planned_start_time = datetime.utcnow()
+    planned_mid_time = planned_start_time + timedelta(seconds=exposure_time / 2.0)
+    
+    self.tracking_log_message(f"Planlagt {obstype}: {planned_start_time.strftime('%H:%M:%S.%f')[:-3]} -> {planned_mid_time.strftime('%H:%M:%S.%f')[:-3]}")
+    
+    # Start eksponering så tæt på planlagt tid som muligt
+    actual_start_time = datetime.utcnow()
+    camera.start_exposure(exposure_time, use_shutter=True)
+    
+    # Beregn justeret midtertidspunkt baseret på faktisk start
+    start_delay = (actual_start_time - planned_start_time).total_seconds()
+    adjusted_mid_time = planned_mid_time + timedelta(seconds=start_delay)
+    
+    if abs(start_delay * 1000) > 5:  # Log kun hvis delay > 5ms
+        self.tracking_log_message(f"Kamera start delay: {start_delay*1000:.1f}ms")
+    
+    # Præcis venting til midtertidspunkt
+    pw4_status = None
+    timing_accuracy = 0.0
+    
+    while datetime.utcnow() < adjusted_mid_time:
+        if self.stop_tracking:  # Check for user stop
+            try:
+                camera.abort_exposure()
+                self.tracking_log_message(f"{obstype.title()} eksponering afbrudt af bruger")
+            except:
+                pass
+            return None
+            
+        # Vent i små intervaller for høj præcision
+        remaining_seconds = (adjusted_mid_time - datetime.utcnow()).total_seconds()
+        if remaining_seconds > 0.01:  # Hvis mere end 10ms tilbage
+            time.sleep(min(0.001, remaining_seconds / 2))  # Sleep max 1ms
+        else:
+            break
+    
+    # Hent PWI4 status så præcist som muligt ved midtertidspunkt
+    actual_mid_time = datetime.utcnow()
+    timing_accuracy = abs((actual_mid_time - adjusted_mid_time).total_seconds() * 1000)  # ms
+    
+    try:
+        if (obstype == 'Tracking' or obstype == 'LeapFrog') and pw4_client:
+            # Brug PWI4 klient for Tracking og LeapFrog billeder
+            status = pw4_client.get_status()
+            if status:
+                pw4_status = {
+                    'mount': {
+                        'ra_apparent_hours': status['ra_apparent_hours'],
+                        'dec_apparent_degs': status['dec_apparent_degs'],
+                        'ra_j2000_hours': status['ra_j2000_hours'],
+                        'dec_j2000_degs': status['dec_j2000_degs'],
+                        'ra_apparent_degs': status['ra_apparent_hours'] * 15.0,
+                        'ra_j2000_degs': status['ra_j2000_hours'] * 15.0,
+                        'is_slewing': status['slewing'],
+                        'is_tracking': status['tracking'],
+                        'altitude_degs': status['altitude_degs'],
+                        'azimuth_degs': status['azimuth_degs'],
+                        'julian_date': status['julian_date'],
+                        'distance_to_sun_degs': status['distance_to_sun_degs'],
+                        'field_angle_degs': status['field_angle_degs']
+                    },
+                    'site': {
+                        'latitude_degs': status['latitude_degs'],
+                        'longitude_degs': status['longitude_degs'],
+                        'height_meters': status['height_meters']
+                    },
+                    'pwi4': {
+                        'version': 'PWI4 HTTP API'
+                    }
+                }
+        elif obstype == 'starfield':
+            # Brug HTTP direkte for stjernehimmel billeder
+            status_response = requests.get(f"{pw4_url}/status", timeout=5)
+            if status_response.status_code == 200:
+                lines = status_response.text.strip().splitlines()
+                pw4_data = {}
+                for line in lines:
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        pw4_data[key.strip()] = value.strip()
+                
+                pw4_status = {
+                    'mount': {
+                        'ra_apparent_hours': float(pw4_data.get('mount.ra_apparent_hours', 0)),
+                        'dec_apparent_degs': float(pw4_data.get('mount.dec_apparent_degs', 0)),
+                        'ra_j2000_hours': float(pw4_data.get('mount.ra_j2000_hours', 0)),
+                        'dec_j2000_degs': float(pw4_data.get('mount.dec_j2000_degs', 0)),
+                        'ra_apparent_degs': float(pw4_data.get('mount.ra_apparent_degs', 0)),
+                        'ra_j2000_degs': float(pw4_data.get('mount.ra_j2000_degs', 0)),
+                        'is_slewing': pw4_data.get('mount.is_slewing', 'false').lower() == 'true',
+                        'is_tracking': pw4_data.get('mount.is_tracking', 'false').lower() == 'true',
+                        'altitude_degs': float(pw4_data.get('mount.altitude_degs', 0)),
+                        'azimuth_degs': float(pw4_data.get('mount.azimuth_degs', 0)),
+                        'julian_date': float(pw4_data.get('mount.julian_date', 0)),
+                        'distance_to_sun_degs': float(pw4_data.get('mount.distance_to_sun_degs', 0)),
+                        'field_angle_degs': float(pw4_data.get('rotator.field_angle_degs', 0))
+                    },
+                    'site': {
+                        'latitude_degs': float(pw4_data.get('site.latitude_degs', 0)),
+                        'longitude_degs': float(pw4_data.get('site.longitude_degs', 0)),
+                        'height_meters': float(pw4_data.get('site.height_meters', 0))
+                    },
+                    'pwi4': {
+                        'version': pw4_data.get('pwi4.version', 'Unknown')
+                    }
+                }
+        
+        self.tracking_log_message(f"PWI4 status hentet: {actual_mid_time.strftime('%H:%M:%S.%f')[:-3]} (nøjagtighed: {timing_accuracy:.1f}ms)")
+        
+    except Exception as pw4_error:
+        self.tracking_log_message(f"PWI4 status fejl ({obstype}): {str(pw4_error)}")
+    
+    # Vent på eksponering færdig
+    camera.wait_for_image(timeout=exposure_time + 2) # Venter maks 2 sekunder ekstra
+    
+    # Hent billede og noter præcis sluttid
+    if self.stop_tracking:
+        return None
+        
+    if camera.image_ready():
+        # Noter tid FØR billedhentning (dette er nærmere det faktiske eksposeringsslut)
+        exposure_end_estimate = datetime.utcnow()
+        img_data = camera.read_image()
+        
+        self.tracking_log_message(f"{obstype.title()} billede hentet: {img_data.shape} (slut: {exposure_end_estimate.strftime('%H:%M:%S.%f')[:-3]})")
+        
+        return {
+            'image_data': img_data,
+            'exposure_start_time': actual_start_time,
+            'exposure_mid_time': actual_mid_time,
+            'exposure_end_time': exposure_end_estimate,
+            'pw4_status': pw4_status,
+            'timing_accuracy': timing_accuracy,
+            'obstype': obstype
+        }
+    else:
+        raise Exception(f"{obstype.title()} kamera billede ikke klar efter timeout")
