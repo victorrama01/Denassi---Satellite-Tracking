@@ -115,6 +115,12 @@ class TkinterDemo:
         self.analysis_directory = None
         self.tracking_pixelsum_radius = tk.IntVar(value=50)
         
+        # Billedgennemgang variabler
+        self.review_files = []
+        self.review_index = 0
+        self.review_directory = None
+        self.review_downscale = 2
+        
         # Beregn TLE variabler
         self.tle_calculation_data = None
         self.tle_csv_directory = None
@@ -205,7 +211,10 @@ class TkinterDemo:
         # Tab 5: Billede Analyse
         self.create_image_analysis_tab(notebook)
         
-        # Tab 6: Beregn TLE
+        # Tab 6: Billedgennemgang
+        self.create_image_review_tab(notebook)
+        
+        # Tab 7: Beregn TLE
         self.create_calculate_tle_tab(notebook)
     
     def update_clock(self):
@@ -1068,6 +1077,215 @@ class TkinterDemo:
         # Clear log button
         ttk.Button(log_frame, text="Ryd Log", 
                   command=lambda: self.analysis_log_text.delete(1.0, tk.END)).pack(pady=2)
+    
+    def create_image_review_tab(self, notebook):
+        """Tab til billedgennemgang og håndtering af PNG-billeder med FITS-fil sletning"""
+        review_frame = ttk.Frame(notebook)
+        notebook.add(review_frame, text="Billedgennemgang")
+        
+        # Hovedcontainer
+        main_frame = ttk.Frame(review_frame)
+        main_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Venstre side: Billedvisning
+        left_frame = ttk.Frame(main_frame)
+        left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+        
+        # Øverst: Mappevælger
+        dir_frame = ttk.LabelFrame(left_frame, text="Mappevælger")
+        dir_frame.pack(fill='x', pady=(0, 10))
+        
+        self.review_dir_entry = ttk.Entry(dir_frame, width=50)
+        self.review_dir_entry.pack(side='left', fill='x', expand=True, padx=5, pady=5)
+        ttk.Button(dir_frame, text="Vælg Mappe", 
+                  command=self.select_review_directory).pack(side='left', padx=5, pady=5)
+        
+        # Billedvisning
+        image_frame = ttk.LabelFrame(left_frame, text="Billedvisning")
+        image_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        self.review_image_label = ttk.Label(image_frame, text="Intet billede indlæst", 
+                                           background='#f0f0f0')
+        self.review_image_label.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Billedinfo
+        self.review_info_label = ttk.Label(left_frame, text="", justify='center')
+        self.review_info_label.pack(pady=5)
+        
+        # Kontrolknapper (nederst på venstre side)
+        button_frame = ttk.Frame(left_frame)
+        button_frame.pack(fill='x', pady=10)
+        
+        self.review_keep_btn = ttk.Button(button_frame, text="Behold ✓", 
+                                         command=self.review_keep_file, width=20)
+        self.review_keep_btn.pack(side='left', padx=5, pady=5, fill='both', expand=True)
+        
+        self.review_delete_btn = ttk.Button(button_frame, text="Slet ✗", 
+                                           command=self.review_delete_file, width=20)
+        self.review_delete_btn.pack(side='left', padx=5, pady=5, fill='both', expand=True)
+        
+        # Højre side: Log
+        right_frame = ttk.Frame(main_frame)
+        right_frame.pack(side='right', fill='both', expand=False, padx=(5, 0))
+        right_frame.pack_propagate(False)
+        right_frame.configure(width=300)
+        
+        log_frame = ttk.LabelFrame(right_frame, text="Gennemgang Log")
+        log_frame.pack(fill='both', expand=True)
+        
+        # Log text widget med scrollbar
+        log_container = ttk.Frame(log_frame)
+        log_container.pack(fill='both', expand=True, padx=5, pady=5)
+        
+        self.review_log_text = tk.Text(log_container, width=35, wrap='word')
+        review_log_scrollbar = ttk.Scrollbar(log_container, orient='vertical', 
+                                            command=self.review_log_text.yview)
+        self.review_log_text.configure(yscrollcommand=review_log_scrollbar.set)
+        
+        review_log_scrollbar.pack(side='right', fill='y')
+        self.review_log_text.pack(side='left', fill='both', expand=True)
+        
+        # Clear log button
+        ttk.Button(log_frame, text="Ryd Log", 
+                  command=lambda: self.review_log_text.delete(1.0, tk.END)).pack(pady=2)
+    
+    def select_review_directory(self):
+        """Vælg mappe til billedgennemgang"""
+        directory = filedialog.askdirectory(title="Vælg mappe med PNG-billeder")
+        if directory:
+            self.review_directory = directory
+            self.review_dir_entry.delete(0, tk.END)
+            self.review_dir_entry.insert(0, directory)
+            self.load_review_images()
+    
+    def load_review_images(self):
+        """Indlæs PNG-billeder fra mappen"""
+        if not self.review_directory:
+            return
+        
+        try:
+            self.review_files = [f for f in os.listdir(self.review_directory) 
+                                if f.lower().endswith('.png')]
+            self.review_index = 0
+            
+            self.review_log_message(f"Fundet {len(self.review_files)} PNG-billeder")
+            
+            if self.review_files:
+                self.show_review_image()
+            else:
+                self.review_image_label.config(text="Ingen PNG-billeder fundet")
+                self.review_info_label.config(text="")
+        except Exception as e:
+            self.review_log_message(f"Fejl ved indlæsning: {e}")
+    
+    def show_review_image(self):
+        """Vis aktuelt billede"""
+        if self.review_index >= len(self.review_files):
+            self.review_image_label.config(text="Alle billeder gennemgået ✓")
+            self.review_info_label.config(text="")
+            self.review_keep_btn.config(state='disabled')
+            self.review_delete_btn.config(state='disabled')
+            return
+        
+        self.review_keep_btn.config(state='normal')
+        self.review_delete_btn.config(state='normal')
+        
+        filename = self.review_files[self.review_index]
+        filepath = os.path.join(self.review_directory, filename)
+        
+        # Opdater info
+        self.review_info_label.config(
+            text=f"{self.review_index + 1}/{len(self.review_files)} — {filename}"
+        )
+        
+        try:
+            # Indlæs PNG-billede
+            img = Image.open(filepath)
+            
+            # Konverter til RGB hvis nødvendigt
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Downscale billedet
+            original_size = img.size
+            new_size = (max(1, original_size[0] // self.review_downscale), 
+                       max(1, original_size[1] // self.review_downscale))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Konverter til PhotoImage
+            photo = ImageTk.PhotoImage(img)
+            self.review_image_label.config(image=photo, text="")
+            self.review_image_label.image = photo
+            
+        except Exception as e:
+            self.review_image_label.config(text=f"Fejl ved indlæsning:\n{e}")
+            self.review_log_message(f"Fejl ved indlæsning af {filename}: {e}")
+            self.review_next_image()
+    
+    def review_keep_file(self):
+        """Behold billede og gå til næste"""
+        self.review_log_message(f"Beholdtes: {self.review_files[self.review_index]}")
+        self.review_next_image()
+    
+    def review_delete_file(self):
+        """Slet PNG og tilsvarende FITS-fil"""
+        if self.review_index >= len(self.review_files):
+            return
+        
+        filename = self.review_files[self.review_index]
+        png_filepath = os.path.join(self.review_directory, filename)
+        
+        # Find tilsvarende FITS-fil - prøv først med _plot.png erstatning, derefter direkte .png erstatning
+        fits_filename = filename.replace('_plot.png', '.fits')
+        if fits_filename == filename:  # Hvis erstatning ikke fungerede, prøv direkte .png -> .fits
+            fits_filename = filename.replace('.png', '.fits')
+        
+        fits_filepath = os.path.join(self.review_directory, fits_filename)
+        
+        files_deleted = []
+        errors = []
+        
+        # Slet PNG-filen
+        try:
+            os.remove(png_filepath)
+            files_deleted.append(filename)
+            self.review_log_message(f"Slettede PNG: {filename}")
+        except Exception as e:
+            errors.append(f"PNG sletning fejlede: {e}")
+            self.review_log_message(f"FEJL ved sletning af PNG: {e}")
+        
+        # Slet FITS-filen hvis den eksisterer
+        if os.path.exists(fits_filepath):
+            try:
+                os.remove(fits_filepath)
+                files_deleted.append(fits_filename)
+                self.review_log_message(f"Slettede FITS: {fits_filename}")
+            except Exception as e:
+                errors.append(f"FITS sletning fejlede: {e}")
+                self.review_log_message(f"FEJL ved sletning af FITS: {e}")
+        else:
+            # Prøv at finde lignende FITS-filer
+            try:
+                possible_fits = [f for f in os.listdir(self.review_directory) 
+                                if f.lower().endswith('.fits') and filename.split('_')[0] in f]
+                if possible_fits:
+                    self.review_log_message(f"FITS ikke fundet. Mulige: {', '.join(possible_fits)}")
+            except:
+                pass
+        
+        self.review_next_image()
+    
+    def review_next_image(self):
+        """Gå til næste billede"""
+        self.review_index += 1
+        self.show_review_image()
+    
+    def review_log_message(self, message):
+        """Tilføj meddelelse til log"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.review_log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+        self.review_log_text.see(tk.END)
+        self.review_log_text.update()
     
     def create_calculate_tle_tab(self, notebook):
         """Tab til at beregne TLE fra observationer"""
@@ -2357,21 +2575,10 @@ class TkinterDemo:
                 header['DEC_APP'] = round(float(mount_data['dec_apparent_degs']), 7)
             if 'ra_j2000_hours' in mount_data:
                 header['RA_J2000'] = round(float(mount_data['ra_j2000_hours']), 7)
-                header['RA_TEL'] = round(float(mount_data['ra_j2000_hours']) * 15.0, 7)  # omregner fra timer til grader
+                header['RA'] = round(float(mount_data['ra_j2000_hours']) * 15.0, 7)  # omregner fra timer til grader
             if 'dec_j2000_degs' in mount_data:
                 header['DEC_J200'] = round(float(mount_data['dec_j2000_degs']), 7)  # Kort navn pga. FITS begrænsning
-                header['DEC_TEL'] = round(float(mount_data['dec_j2000_degs']), 7)  # Alias for kompatibilitet
-                
-            # J2000 koordinater i grader (decimal) - for både tracking og leapfrog
-            if 'ra_j2000_hours' in mount_data:
-                header['RA'] = round(float(mount_data['ra_j2000_hours']) * 15.0, 7)  # Timer til grader
-                header['DEC'] = round(float(mount_data['dec_j2000_degs']), 7)
-                
-            # Ekstra koordinat formater
-            if 'ra_apparent_degs' in mount_data:
-                header['RA_APPD'] = round(float(mount_data['ra_apparent_degs']), 7)
-            if 'ra_j2000_degs' in mount_data:
-                header['RA_J2KD'] = round(float(mount_data['ra_j2000_degs']), 7)
+                header['DEC'] = round(float(mount_data['dec_j2000_degs']), 7)  # Alias for kompatibilitet
                 
             # Teleskop status
             if 'is_slewing' in mount_data:
@@ -2379,10 +2586,8 @@ class TkinterDemo:
             if 'is_tracking' in mount_data:
                 header['TRACKING'] = mount_data['is_tracking']
             if 'altitude_degs' in mount_data:
-                header['ALTITUDE'] = round(float(mount_data['altitude_degs']), 7)
                 header['ALT_TEL'] = round(float(mount_data['altitude_degs']), 7)  # Alias
             if 'azimuth_degs' in mount_data:
-                header['AZIMUTH'] = round(float(mount_data['azimuth_degs']), 7)
                 header['AZ_TEL'] = round(float(mount_data['azimuth_degs']), 7)  # Alias
                 
             # PWI4 specifikke felter
@@ -2393,6 +2598,15 @@ class TkinterDemo:
                 header['CROTA2'] = round(float(mount_data['field_angle_degs']), 7)
             if 'distance_to_sun_degs' in mount_data:
                 header['DIST_SUN'] = round(float(mount_data['distance_to_sun_degs']), 7)
+            if 'timestamp_utc' in mount_data:
+                header['PWI4MTS'] = mount_data['timestamp_utc']
+            if 'update_duration_msec' in mount_data:
+                header['PWI4DUR'] = int(mount_data['update_duration_msec'])
+            if 'field_angle_here_degs' in mount_data:
+                header['FA_HERE'] = round(float(mount_data['field_angle_here_degs']), 7)
+            if 'field_angle_at_target_degs' in mount_data:
+                header['FA_TARG'] = round(float(mount_data['field_angle_at_target_degs']), 7)
+            
                 
             # Observer position
             site_data = pw4_status.get('site', {})
@@ -2407,7 +2621,17 @@ class TkinterDemo:
             pwi4_data = pw4_status.get('pwi4', {})
             if 'version' in pwi4_data:
                 header['PWI4VER'] = pwi4_data['version']
-        
+                
+            response_data = pw4_status.get('response', {})
+            if 'timestamp_utc' in response_data:
+                header['PWI4TIME'] = response_data['timestamp_utc']
+
+            rotator_data = pw4_status.get('rotator', {})
+            if 'field_angle_degs' in rotator_data:
+                header['ROT_ANGLE'] = round(float(rotator_data['field_angle_degs']), 7)
+            if 'mech_position_degs' in rotator_data:
+                header['ROT_MECH'] = round(float(rotator_data['mech_position_degs']), 7)
+
         # LeapFrog satellite koordinater (planlagte - kun hvis angivet)
         if ra_hours is not None and dec_degrees is not None:
             header['Leap_RA'] = (ra_hours, 'Planned satellite RA (hours)')
@@ -4187,11 +4411,11 @@ class TkinterDemo:
                             cdelt1 = astap_row.get('CDELT1', np.nan)
                             cdelt2 = astap_row.get('CDELT2', np.nan)
                             crota2 = astap_row.get('CROTA2', 0)
-                            dec_tel = file_data.get('DEC_TEL', 0)
+                            dec_tel = file_data.get('DEC', 0)
                             
                             if not np.isnan(cdelt1) and not np.isnan(cdelt2):
                                 cd11_python, cd12_python, cd21_python, cd22_python = compute_cd(
-                                    cdelt1, cdelt2, crota2, dec_tel, ra_units_on_sky=True
+                                    cdelt1, cdelt2, crota2, dec_tel
                                 )
                                 file_data['CD1_1_python'] = cd11_python
                                 file_data['CD1_2_python'] = cd12_python
@@ -4317,12 +4541,12 @@ class TkinterDemo:
                     crpix2 = file_data.get('NAXIS2', 0) / 2.0
                     
                     # Beregn reference værdi (teleskopets pointing med offset)
-                    crval1 = file_data.get('RA_TEL', 0) + ref_offset.get('ra_offset', 0)
-                    crval2 = file_data.get('DEC_TEL', 0) + ref_offset.get('dec_offset', 0)
+                    crval1 = file_data.get('RA', 0) + ref_offset.get('ra_offset', 0)
+                    crval2 = file_data.get('DEC', 0) + ref_offset.get('dec_offset', 0)
                     
                     # Beregn CD matrix
                     cd11, cd12, cd21, cd22 = compute_cd(
-                        cdelt1, cdelt2, crota2, crval2, ra_units_on_sky=False
+                        cdelt1, cdelt2, crota2, crval2
                     )
                     
                     file_data['CDELT1'] = cdelt1
@@ -4673,8 +4897,8 @@ class TkinterDemo:
                 with fits.open(filepath) as hdul:
                     original_header = hdul[0].header
                 
-                expected_ra = original_header.get('RA_TEL', 0)
-                expected_dec = original_header.get('DEC_TEL', 0)
+                expected_ra = original_header.get('RA', 0)
+                expected_dec = original_header.get('DEC', 0)
                 expected_rotation = original_header.get('field_angle_degs', 0)
                 
                 actual_ra = wcs_header.get('CRVAL1', expected_ra)
@@ -4816,17 +5040,8 @@ class TkinterDemo:
                 plt.xlabel("Pixel X")
                 plt.ylabel("Pixel Y")
                 
-                # Gem til fil med CSV index i navnet
-                if csv_index is not None:
-                    # Use existing format but with CSV index: filename_XXX_plot.png
-                    base_name = os.path.splitext(os.path.basename(filepath))[0]
-                    directory = os.path.dirname(filepath)
-                    # Remove existing number if present and add CSV index
-                    import re
-                    base_name_clean = re.sub(r'_\d{3}$', '', base_name)
-                    plot_path = os.path.join(directory, f"{base_name_clean}_{csv_index+1:03d}_plot.png")
-                else:
-                    plot_path = filepath.replace('.fits', '_plot.png')
+                # Gem til fil med samme navn som FITS-fil, bare .png
+                plot_path = filepath.replace('.fits', '.png')
                 plt.savefig(plot_path, dpi=150, bbox_inches='tight')
                 plt.close()  # Vigtigt: luk figuren
                 
@@ -4891,17 +5106,8 @@ class TkinterDemo:
                 plt.xlabel("Pixel X")
                 plt.ylabel("Pixel Y")
                 
-                # Gem til fil med CSV index i navnet
-                if csv_index is not None:
-                    # Use existing format but with CSV index: filename_XXX_plot.png
-                    base_name = os.path.splitext(os.path.basename(filepath))[0]
-                    directory = os.path.dirname(filepath)
-                    # Remove existing number if present and add CSV index
-                    import re
-                    base_name_clean = re.sub(r'_\d{3}$', '', base_name)
-                    plot_path = os.path.join(directory, f"{base_name_clean}_{csv_index+1:03d}_plot.png")
-                else:
-                    plot_path = filepath.replace('.fits', '_plot.png')
+                # Gem til fil med samme navn som FITS-fil, bare .png
+                plot_path = filepath.replace('.fits', '.png')
                 plt.savefig(plot_path, dpi=150, bbox_inches='tight')
                 plt.close()  # Vigtigt: luk figuren
                 
@@ -4922,7 +5128,7 @@ class TkinterDemo:
                 widget.destroy()
             
             # Find alle gemte plot filer
-            plot_files = sorted([f for f in os.listdir(directory) if f.endswith('_plot.png')])
+            plot_files = sorted([f for f in os.listdir(directory) if f.endswith('.png')])
             
             if not plot_files:
                 ttk.Label(self.plot_scrollable_frame, 
@@ -5085,96 +5291,96 @@ class TkinterDemo:
             self.load_tle_csv_data(directory)
     
     def load_tle_csv_data(self, directory):
-        """Indlæs CSV-fil fra mappe til TLE beregning"""
+        """Load CSV file from folder for TLE calculation"""
         try:
-            self.log_tle_message(f"Søger efter CSV-fil i: {directory}")
+            self.log_tle_message(f"Searching for CSV file in: {directory}")
             
-            # Find CSV-filer der starter med 'data'
+            # Find CSV files starting with 'data'
             csv_files = [f for f in os.listdir(directory) if f.lower().startswith('data') and f.lower().endswith('.csv')]
             
             if not csv_files:
-                self.log_tle_message("❌ Ingen CSV-filer fundet der starter med 'data'")
-                self.tle_status_label.config(text="Ingen data CSV-fil fundet i mappen", foreground='red')
-                messagebox.showerror("Fejl", "Ingen CSV-filer fundet der starter med 'data' i den valgte mappe")
+                self.log_tle_message("❌ No CSV files found starting with 'data'")
+                self.tle_status_label.config(text="No data CSV file found in folder", foreground='red')
+                messagebox.showerror("Error", "No CSV files found starting with 'data' in the selected folder")
                 return
             
-            # Brug første fil
+            # Use first file
             csv_file = csv_files[0]
             csv_path = os.path.join(directory, csv_file)
-            self.log_tle_message(f"Fundet CSV-fil: {csv_file}")
+            self.log_tle_message(f"Found CSV file: {csv_file}")
             
-            # Indlæs CSV-fil
+            # Load CSV file
             df = pd.read_csv(csv_path)
-            self.log_tle_message(f"✅ Indlæst {len(df)} observationer")
+            self.log_tle_message(f"✅ Loaded {len(df)} observations")
 
-            # Filtrer bort rækker med OBSTYPE = 'stjernehimmel'
+            # Filter out rows with OBSTYPE = 'stjernehimmel'
             if 'OBSTYPE' in df.columns:
                 before_filter = len(df)
                 df = df[df['OBSTYPE'] != 'stjernehimmel']
                 after_filter = len(df)
                 if before_filter != after_filter:
                     filtered_count = before_filter - after_filter
-                    self.log_tle_message(f"Filtreret {filtered_count} stjernehimmel observationer bort")
-                    self.log_tle_message(f"✅ {after_filter} observationer tilbage efter filtrering")
+                    self.log_tle_message(f"Filtered out {filtered_count} starfield observations")
+                    self.log_tle_message(f"✅ {after_filter} observations remaining after filtering")
             
-            # Filtrer bort rækker hvor Sat_RA_Behandlet ikke har en værdi
+            # Filter out rows where Sat_RA_Behandlet has no value
             if 'Sat_RA_Behandlet' in df.columns:
                 before_filter = len(df)
                 df = df[df['Sat_RA_Behandlet'].notna()]
                 after_filter = len(df)
                 if before_filter != after_filter:
                     filtered_count = before_filter - after_filter
-                    self.log_tle_message(f"Filtreret {filtered_count} observationer uden Behandlet data bort")
-                    self.log_tle_message(f"✅ {after_filter} observationer tilbage efter filtrering")
+                    self.log_tle_message(f"Filtered out {filtered_count} observations without processed data")
+                    self.log_tle_message(f"✅ {after_filter} observations remaining after filtering")
             
-            # Tjek at nødvendige kolonner findes for TLE beregning
+            # Check that required columns exist for TLE calculation
             required_columns = ['Sat_RA_Behandlet', 'Sat_DEC_Behandlet', 'X_obs', 'Y_obs', 'Z_obs', 'DATE-OBS']
             missing_columns = [col for col in required_columns if col not in df.columns]
             
             if missing_columns:
-                self.log_tle_message(f"❌ Manglende kolonner: {', '.join(missing_columns)}")
-                messagebox.showerror("Fejl", f"CSV-filen mangler følgende kolonner:\n{', '.join(missing_columns)}")
+                self.log_tle_message(f"❌ Missing columns: {', '.join(missing_columns)}")
+                messagebox.showerror("Error", f"CSV file is missing the following columns:\n{', '.join(missing_columns)}")
                 return
             
-            # Gem data
+            # Store data
             self.tle_csv_data = df
             
-            # Opdater index dropdown menus
-            self.log_tle_message("Opdaterer index valgmuligheder...")
+            # Update index dropdown menus
+            self.log_tle_message("Updating index options...")
             indices = [str(i) for i in range(len(df))]
             
             self.index1_combo['values'] = indices
             self.index2_combo['values'] = indices
             self.index3_combo['values'] = indices
             
-            # Sæt standard valg (første, midterste, sidste)
+            # Set default selection (first, middle, last)
             if len(df) >= 3:
                 middle_idx = len(df) // 2
                 self.index1_combo.set(str(0))
                 self.index2_combo.set(str(middle_idx))
                 self.index3_combo.set(str(len(df) - 1))
-                self.log_tle_message(f"✅ Standard indices sat: 0, {middle_idx}, {len(df)-1}")
+                self.log_tle_message(f"✅ Default indices set: 0, {middle_idx}, {len(df)-1}")
             else:
-                self.log_tle_message("ADVARSEL: Mindre end 3 observationer i CSV!")
-                messagebox.showwarning("Advarsel", "CSV-filen indeholder mindre end 3 observationer.\nDer skal være mindst 3 observationer for TLE beregning.")
+                self.log_tle_message("WARNING: Less than 3 observations in CSV!")
+                messagebox.showwarning("Warning", "CSV file contains less than 3 observations.\nAt least 3 observations are required for TLE calculation.")
             
-            # Opdater status
-            self.tle_status_label.config(text=f"✅ Data indlæst: {csv_file} ({len(df)} obs.)", foreground='green')
-            self.log_tle_message(f"✅ CSV data klar til TLE beregning")
-            self.log_tle_message(f"   Kolonner: {', '.join(df.columns.tolist()[:10])}{'...' if len(df.columns) > 10 else ''}")
+            # Update status
+            self.tle_status_label.config(text=f"✅ Data loaded: {csv_file} ({len(df)} obs.)", foreground='green')
+            self.log_tle_message(f"✅ CSV data ready for TLE calculation")
+            self.log_tle_message(f"   Columns: {', '.join(df.columns.tolist()[:10])}{'...' if len(df.columns) > 10 else ''}")
             
-            # Tjek om TLE kolonner findes og beregn afvigelser hvis ja
+            # Check if TLE columns exist and calculate deviations if yes
             if 'TLE1' in df.columns and 'TLE2' in df.columns:
-                self.log_tle_message("TLE kolonner fundet - beregner afvigelser...")
+                self.log_tle_message("TLE columns found - calculating deviations...")
                 self.calculate_tle_deviations(df)
             else:
-                self.log_tle_message("TLE1 og TLE2 kolonner ikke fundet - kan ikke beregne afvigelser endnu")
+                self.log_tle_message("TLE1 and TLE2 columns not found - cannot calculate deviations yet")
             
         except Exception as e:
-            error_msg = f"Fejl ved indlæsning af CSV: {str(e)}"
+            error_msg = f"Error loading CSV: {str(e)}"
             self.log_tle_message(f"❌ {error_msg}")
-            self.tle_status_label.config(text="Fejl ved indlæsning", foreground='red')
-            messagebox.showerror("Fejl", error_msg)
+            self.tle_status_label.config(text="Error loading", foreground='red')
+            messagebox.showerror("Error", error_msg)
             import traceback
             print(traceback.format_exc())
     
@@ -5206,68 +5412,69 @@ class TkinterDemo:
         return d
     
     def calculate_tle_deviations(self, results_df):
-        """Beregn TLE afvigelser og opdater plot"""
+        """Calculate TLE deviations and update plot"""
         try:
-            # Hent TLE data fra DataFrame
+            # Get TLE data from DataFrame
             if 'TLE1' not in results_df.columns or 'TLE2' not in results_df.columns:
-                self.log_tle_message("❌ TLE1 og/eller TLE2 kolonner ikke fundet i data")
+                self.log_tle_message("❌ TLE1 and/or TLE2 columns not found in data")
                 return
                 
             tle_line1, tle_line2 = results_df['TLE1'].iloc[0], results_df['TLE2'].iloc[0]
             
-            self.log_tle_message("Beregner satellit positioner fra TLE...")
+            self.log_tle_message("Calculating satellite positions from TLE...")
             
-            # Tjek påkrævede kolonner for calculate_satellite_data
+            # Check required columns for calculate_satellite_data
             required_cols = ['DATE-OBS', 'LONG-OBS', 'ELEV-OBS']
             missing_cols = [col for col in required_cols if col not in results_df.columns]
             
-            # Tjek LAT kolonne (kan have to forskellige navne)
+            # Check LAT column (can have two different names)
             has_lat = 'LAT-OBS' in results_df.columns or 'LAT--OBS' in results_df.columns
             if not has_lat:
-                missing_cols.append('LAT-OBS eller LAT--OBS')
+                missing_cols.append('LAT-OBS or LAT--OBS')
             
             if missing_cols:
-                self.log_tle_message(f"❌ Manglende kolonner for satellite beregning: {missing_cols}")
-                self.log_tle_message(f"Tilgængelige kolonner: {list(results_df.columns)}")
+                self.log_tle_message(f"❌ Missing columns for satellite calculation: {missing_cols}")
+                self.log_tle_message(f"Available columns: {list(results_df.columns)}")
                 return
             
-            # Tjek om Func_fagprojekt funktioner er tilgængelige
+            # Check if Func_fagprojekt functions are available
             try:
-                # Reset DataFrame index for at sikre sequential integer indices (0,1,2...)
-                # Dette er nødvendigt fordi calculate_satellite_data forventer sequential indices
+                # Reset DataFrame index to ensure sequential integer indices (0,1,2...)
+                # This is necessary because calculate_satellite_data expects sequential indices
                 df_for_calc = results_df.reset_index(drop=True)
-                self.log_tle_message(f"Reset DataFrame index for beregning")
+                #df_for_calc = results_df.copy()
+                self.log_tle_message(f"Reset DataFrame index for calculation")
                 
-                # Beregn satellit data
+                # Calculate satellite data
                 afstand, vinkel, sat_pos, earth_pos, obs_points = calculate_satellite_data(
                     df_for_calc, tle_line1, tle_line2
                 )
             except Exception as func_error:
-                self.log_tle_message(f"❌ Fejl i calculate_satellite_data: {str(func_error)}")
-                self.log_tle_message(f"Fejl type: {type(func_error).__name__}")
-                self.log_tle_message("Tjek at Func_fagprojekt.py er tilgængelig og kompatibel")
+                self.log_tle_message(f"❌ Error in calculate_satellite_data: {str(func_error)}")
+                self.log_tle_message(f"Error type: {type(func_error).__name__}")
+                self.log_tle_message("Check that Func_fagprojekt.py is available and compatible")
                 # Log DataFrame info for debugging
-                self.log_tle_message(f"DataFrame kolonner: {list(results_df.columns)}")
-                self.log_tle_message(f"DataFrame størrelse: {results_df.shape}")
+                self.log_tle_message(f"DataFrame columns: {list(results_df.columns)}")
+                self.log_tle_message(f"DataFrame shape: {results_df.shape}")
                 self.log_tle_message(f"DataFrame index: {results_df.index.tolist()}")
                 if len(results_df) > 0:
                     sample_row = results_df.iloc[0]
-                    self.log_tle_message(f"Første række eksempel: DATE-OBS={sample_row.get('DATE-OBS', 'MANGLER')}")
-                    self.log_tle_message(f"LAT-OBS/LAT--OBS: {sample_row.get('LAT-OBS', sample_row.get('LAT--OBS', 'MANGLER'))}")
+                    self.log_tle_message(f"First row example: DATE-OBS={sample_row.get('DATE-OBS', 'MISSING')}")
+                    self.log_tle_message(f"LAT-OBS/LAT--OBS: {sample_row.get('LAT-OBS', sample_row.get('LAT--OBS', 'MISSING'))}")
                 import traceback
-                self.log_tle_message(f"Detaljeret fejl:\n{traceback.format_exc()}")
+                self.log_tle_message(f"Detailed error:\n{traceback.format_exc()}")
                 return
             
             satellite_positions = np.array(sat_pos)
             observation_points = np.array(obs_points)
             
-            # Beregn relative positioner
+            # Calculate relative positions
             x_list = satellite_positions[:, 0] - observation_points[:, 0]
             y_list = satellite_positions[:, 1] - observation_points[:, 1]
             z_list = satellite_positions[:, 2] - observation_points[:, 2]
             
-            # Konverter til RA/DEC
-            self.log_tle_message("Konverterer til RA/DEC koordinater...")
+            # Convert to RA/DEC
+            self.log_tle_message("Converting to RA/DEC coordinates...")
             ra_tle = []
             dec_tle = []
             for i in range(len(x_list)):
@@ -5278,35 +5485,35 @@ class TkinterDemo:
             ra_tle = np.array(ra_tle)
             dec_tle = np.array(dec_tle)
             
-            # Hent observerede positioner
+            # Get observed positions
             try:
                 sat_ra_behandlet = results_df['Sat_RA_Behandlet'].values
                 sat_dec_behandlet = results_df['Sat_DEC_Behandlet'].values
-                sat_ra_teleskop = results_df['RA_J2000'].values * 15  # Konverter fra timer til grader
-                sat_dec_teleskop = results_df['DEC_TEL'].values
+                sat_ra_teleskop = results_df['RA_J2000'].values * 15  # Convert from hours to degrees
+                sat_dec_teleskop = results_df['DEC'].values
             except KeyError as e:
-                self.log_tle_message(f"❌ Manglende kolonne: {str(e)}")
-                self.log_tle_message("Tjek at CSV-filen indeholder alle nødvendige kolonner")
+                self.log_tle_message(f"❌ Missing column: {str(e)}")
+                self.log_tle_message("Check that CSV file contains all necessary columns")
                 return
             
-            # Beregn afvigelser
-            self.log_tle_message("Beregner afvigelser...")
+            # Calculate deviations
+            self.log_tle_message("Calculating deviations...")
             delta_ra_teleskop = self.angle_diff_deg(sat_ra_teleskop, ra_tle)
             delta_dec_teleskop = self.angle_diff_deg(sat_dec_teleskop, dec_tle)
             delta_ra_behandlet = self.angle_diff_deg(sat_ra_behandlet, ra_tle)
             delta_dec_behandlet = self.angle_diff_deg(sat_dec_behandlet, dec_tle)
             
-            # Beregn tid i sekunder efter første måling
+            # Calculate time in seconds after first measurement
             if 'JD' in results_df.columns:
                 jd_first = results_df["JD"].iloc[0]
                 seconds_after_first_measurement = (results_df["JD"] - jd_first) * 86400
             else:
-                # Beregn tid fra DATE-OBS kolonnen
+                # Calculate time from DATE-OBS column
                 times_dt = pd.to_datetime(results_df['DATE-OBS'])
                 first_time = times_dt.iloc[0]
                 seconds_after_first_measurement = (times_dt - first_time).dt.total_seconds()
             
-            # Gem data
+            # Store data
             self.tle_calculation_data = {
                 'seconds': seconds_after_first_measurement,
                 'delta_ra_behandlet': delta_ra_behandlet,
@@ -5316,110 +5523,81 @@ class TkinterDemo:
                 'sat_pos_tle_original': satellite_positions
             }
             
-            self.log_tle_message(f"✅ Beregnet afvigelser for {len(delta_ra_behandlet)} datapunkter")
+            self.log_tle_message(f"✅ Calculated deviations for {len(delta_ra_behandlet)} data points")
             
-            # Opdater plot
-            self.log_tle_message("Opdaterer plot...")
+            # Update plot
+            self.log_tle_message("Updating plot...")
             self.update_tle_plot()
             
         except Exception as e:
-            error_msg = f"Fejl ved beregning af TLE afvigelser: {str(e)}"
+            error_msg = f"Error calculating TLE deviations: {str(e)}"
             self.log_tle_message(f"❌ {error_msg}")
-            messagebox.showerror("Fejl", error_msg)
+            messagebox.showerror("Error", error_msg)
             import traceback
             print(traceback.format_exc())
     
     def update_tle_plot(self):
-        """Opdater TLE afvigelsesplot"""
+        """Update TLE deviation plot"""
         try:
             if self.tle_calculation_data is None:
                 return
             
-            # Hent data
+            # Get data
             seconds = self.tle_calculation_data['seconds']
             delta_ra_behandlet = self.tle_calculation_data['delta_ra_behandlet']
             delta_dec_behandlet = self.tle_calculation_data['delta_dec_behandlet']
             delta_ra_teleskop = self.tle_calculation_data['delta_ra_teleskop']
             delta_dec_teleskop = self.tle_calculation_data['delta_dec_teleskop']
             
-            # Ryd tidligere plot
+            # Clear previous plot
             for ax in self.tle_plot_axes:
                 ax.clear()
             
-            # RA-afvigelser (øverste subplot) - plot against indices
+            # RA deviations (top subplot)
             indices = list(range(len(seconds)))
-            self.tle_plot_axes[0].plot(indices, delta_ra_behandlet, label='Satelittens ΔRA', 
+            self.tle_plot_axes[0].plot(indices, delta_ra_behandlet, label='Satellite ΔRA', 
                                       marker='o', linestyle='', color='blue')
-            self.tle_plot_axes[0].plot(indices, delta_ra_teleskop, label='Teleskopets ΔRA', 
+            self.tle_plot_axes[0].plot(indices, delta_ra_teleskop, label='Telescope ΔRA', 
                                       marker='o', linestyle='', color='orange', fillstyle='none')
             
-            # Set up the top axis to show exactly 4 evenly spaced times
-            ax_top = self.tle_plot_axes[0].twiny()
-            ax_top.set_xlim(self.tle_plot_axes[0].get_xlim())
-            
-            # Create 4 evenly spaced tick positions
-            n_obs = len(indices)
-            if n_obs >= 4:
-                time_tick_indices = [0, n_obs//3, 2*n_obs//3, n_obs-1]
-            else:
-                time_tick_indices = list(range(n_obs))
-            
-            time_ticks = time_tick_indices
-            time_labels = [f'{seconds.iloc[i]:.0f}' for i in time_tick_indices]
-            
-            ax_top.set_xticks(time_ticks)
-            ax_top.set_xticklabels(time_labels)
-            ax_top.set_xlabel('Seconds after first observation')
-
-
-            
-            # Forbind punkterne med stiplede linjer
+            # Connect points with dashed lines
             for i in range(len(seconds)):
                 self.tle_plot_axes[0].plot([i, i], 
                                           [delta_ra_behandlet[i], delta_ra_teleskop[i]], 
                                           'k--', alpha=0.3, linewidth=0.8)
             
             self.tle_plot_axes[0].set_xlabel('Observation Index')
-            self.tle_plot_axes[0].set_ylabel('Afvigelse (grader)')
-            self.tle_plot_axes[0].set_title('ΔRA: Observeret - TLE')
+            self.tle_plot_axes[0].set_ylabel('Deviation (degrees)')
+            self.tle_plot_axes[0].set_title('ΔRA: Observed - TLE')
             self.tle_plot_axes[0].legend()
             self.tle_plot_axes[0].grid(True, alpha=0.3)
             
-            # DEC-afvigelser (nederste subplot)
-            self.tle_plot_axes[1].plot(indices, delta_dec_behandlet, label='Satelittens ΔDEC', 
+            # DEC deviations (bottom subplot)
+            self.tle_plot_axes[1].plot(indices, delta_dec_behandlet, label='Satellite ΔDEC', 
                                       marker='o', linestyle='', color='blue')
-            self.tle_plot_axes[1].plot(indices, delta_dec_teleskop, label='Teleskopets ΔDEC', 
+            self.tle_plot_axes[1].plot(indices, delta_dec_teleskop, label='Telescope ΔDEC', 
                                       marker='o', linestyle='', color='orange', fillstyle='none')
             
-            # Forbind punkterne med stiplede linjer
+            # Connect points with dashed lines
             for i in range(len(seconds)):
                 self.tle_plot_axes[1].plot([i, i], 
                                           [delta_dec_behandlet[i], delta_dec_teleskop[i]], 
                                           'k--', alpha=0.3, linewidth=0.8)
             
             self.tle_plot_axes[1].set_xlabel('Observation Index')
-            self.tle_plot_axes[1].set_ylabel('Afvigelse (grader)')
-            self.tle_plot_axes[1].set_title('ΔDEC: Observeret - TLE')
+            self.tle_plot_axes[1].set_ylabel('Deviation (degrees)')
+            self.tle_plot_axes[1].set_title('ΔDEC: Observed - TLE')
             self.tle_plot_axes[1].legend()
             self.tle_plot_axes[1].grid(True, alpha=0.3)
             
-            # Set up the top axis for DEC plot with the same 4 evenly spaced times
-            ax_top_dec = self.tle_plot_axes[1].twiny()
-            ax_top_dec.set_xlim(self.tle_plot_axes[1].get_xlim())
-            
-            # Use the same time ticks as the RA plot
-            ax_top_dec.set_xticks(time_ticks)
-            ax_top_dec.set_xticklabels(time_labels)
-            ax_top_dec.set_xlabel('Seconds after first observation')
-            
-            # Opdater figure
-            self.tle_plot_figure.tight_layout(rect=[0, 0.03, 1, 0.95])
+            # Update figure
+            self.tle_plot_figure.tight_layout()
             self.tle_canvas.draw()
             
-            self.log_tle_message("✅ Plot opdateret succesfuldt")
+            self.log_tle_message("✅ Plot updated successfully")
             
         except Exception as e:
-            error_msg = f"Fejl ved opdatering af plot: {str(e)}"
+            error_msg = f"Error updating plot: {str(e)}"
             self.log_tle_message(f"❌ {error_msg}")
             print(error_msg)
             import traceback
@@ -5680,27 +5858,42 @@ class TkinterDemo:
         return value
 
     def _compact_tle_notation(self, value):
-        """Konverter float til TLE kompakt notation som '34500-3'"""
+        """Konverter float til TLE kompakt notation som '34500-3' eller '-4500-5'
+        
+        Format: [±]XXXXX[±]Y hvor:
+        - Første tegn er valgfrit minustegn for negativ mantissa
+        - XXXXX er mantissa (5 cifre)
+        - [±] er eksponent fortegn (+ eller -)
+        - Y er eksponent (1-2 cifre)
+        """
         if abs(value) < 5e-12:
             return "00000-0"
+        
         s = f"{value:.5e}"
         mant_str, exp_str = s.split('e')
         mant = abs(float(mant_str))
         exp = int(exp_str)
+        
         mantissa_int = int(round(mant * 1e5))
         if mantissa_int >= 100000:
             mantissa_int //= 10
             exp += 1
+        
         sign_exp = '-' if exp < 0 else '+'
         exp_abs = abs(exp)
         sign_prefix = '-' if value < 0 else ''
+        
+        # Returnér uden padding - padding skal ske i Line 1 konstruktionen
         return f"{sign_prefix}{mantissa_int:05d}{sign_exp}{exp_abs}"
 
     def format_first_derivative(self, value):
-        """Formatter mean motion dot til TLE: fx .00000186"""
+        """Formatter mean motion dot til TLE: fx .00000186 eller -.0000186"""
         s = f"{value:.8f}"
+        # Fjern ledende "0" før decimalpunktet, men behold minustegn hvis negativt
         if s.startswith("0"):
-            s = s[1:]
+            s = s[1:]  # " 0.xxxxx" -> ".xxxxx"
+        elif s.startswith("-0"):
+            s = "-" + s[2:]  # "-0.xxxxx" -> "-.xxxxx"
         return s
 
     def format_tle(self, ta0, ele0, params, a):
@@ -5768,20 +5961,26 @@ class TkinterDemo:
 
         # Formatter first derivative
         mean_motion_dot_str = self.format_first_derivative(mean_motion_dot)
+        # Højre-justér mean_motion_dot_str til præcis 10 tegn
+        mean_motion_dot_str = f"{mean_motion_dot_str:>10s}"
 
         # Formatter ddot og bstar til kompakt notation
         ddot_str = self._compact_tle_notation(nddot)
         bstar_str = self._compact_tle_notation(bstar)
 
         # Line 1
+        # TLE format (kolonne-baseret):
+        # 1 25544U 98067A   08264.51782528 -.00002182  00000-0 -11606-4 0  2927
+        # Kolonne 34-43: mean motion dot (10 tegn), kolonne 45-52: ddot (8 tegn), kolonne 54-61: bstar (8 tegn)
+        
         line1_data = (
             f"1 {satid:5d}{classification}"
             f" {intldesg:8s} "
             f"{epoch_str:14s} "
-            f" {mean_motion_dot_str}"
-            f" {ddot_str:8s}"
-            f" {bstar_str:8s}"
-            f" 0 {int(elnum):4d}"  # elementnummer altid 4 tegn
+            f"{mean_motion_dot_str} "
+            f"{ddot_str:>8s} "
+            f"{bstar_str:>8s}"
+            f" 0 {int(elnum):>4d}"
         )
         checksum1 = self.calculate_tle_checksum(line1_data)
         line1 = line1_data[:68] + str(checksum1)  # placer checksum i kolonne 69
@@ -6035,19 +6234,19 @@ class TkinterDemo:
             print(traceback.format_exc())
     
     def show_tle_3d_plot(self):
-        """Viser 3D plot af beregnet TLE"""
+        """Show 3D plot of calculated TLE"""
         try:
             if self.tle_result is None:
-                messagebox.showwarning("Ingen resultat", "Beregn først en TLE")
+                messagebox.showwarning("No Result", "Calculate a TLE first")
                 return
             
             if not PLOTLY_AVAILABLE:
-                messagebox.showerror("Fejl", "Plotly ikke tilgængelig")
+                messagebox.showerror("Error", "Plotly not available")
                 return
             
-            self.log_tle_message(" Genererer 3D plot...")
+            self.log_tle_message("Generating 3D plot...")
             
-            # Opret 3D plot (lignende til LeapFrog plot)
+            # Create 3D plot (similar to LeapFrog plot)
             earth_radius = 6371
             u, v = np.mgrid[0:2*np.pi:100j, 0:np.pi:50j]
             x = earth_radius * np.cos(u) * np.sin(v)
@@ -6056,65 +6255,65 @@ class TkinterDemo:
             
             fig = go.Figure()
             
-            # Tilføj Jorden
+            # Add Earth
             fig.add_trace(go.Surface(
                 x=x, y=y, z=z,
                 colorscale='Blues',
                 opacity=0.5,
                 showscale=False,
-                name='Jorden'
+                name='Earth'
             ))
             
-            # Beregn satellit bane fra TLE
+            # Calculate satellite orbit from TLE
             satellite = None  # Initialize satellite variable
             ts_times = None  # Initialize ts_times for reuse
 
-            # Hent data
+            # Get data
             df = self.tle_csv_data
             
             if SKYFIELD_AVAILABLE:
                 ts = load.timescale()
                 
-                # Hent beregnet TLE fra DataFrame
+                # Get calculated TLE from DataFrame
                 if 'Calculated_TLE_Line1' in df.columns and 'Calculated_TLE_Line2' in df.columns:
                     line1 = df['Calculated_TLE_Line1'].iloc[0]
                     line2 = df['Calculated_TLE_Line2'].iloc[0]
                     
-                    self.log_tle_message(f"TLE Linjer fra DataFrame:\n{line1}\n{line2}")
+                    self.log_tle_message(f"TLE Lines from DataFrame:\n{line1}\n{line2}")
                     
                 else:
-                    self.log_tle_message("Calculated_TLE_Line1/Calculated_TLE_Line2 kolonner ikke fundet i CSV")
-                    # Fallback til self.tle_result hvis DataFrame kolonner ikke findes
+                    self.log_tle_message("Calculated_TLE_Line1/Calculated_TLE_Line2 columns not found in CSV")
+                    # Fallback to self.tle_result if DataFrame columns not found
                     if self.tle_result and 'tle_lines' in self.tle_result:
                         line1, line2 = self.tle_result['tle_lines']
-                        self.log_tle_message(f"Fallback til TLE fra tle_result:\n{line1}\n{line2}")
+                        self.log_tle_message(f"Fallback to TLE from tle_result:\n{line1}\n{line2}")
                     else:
                         line1, line2 = None, None
-                        self.log_tle_message("❌ Ingen TLE data tilgængelig")
+                        self.log_tle_message("❌ No TLE data available")
                 
-                # Validér beregnet TLE data
+                # Validate calculated TLE data
                 if line1 and line2:
-                    self.log_tle_message("Opretter satellit fra beregnet TLE...")
+                    self.log_tle_message("Creating satellite from calculated TLE...")
                     
                     try:
-                        satellite = EarthSatellite(line1, line2, 'Beregnet TLE', ts)
-                        self.log_tle_message("✅ Beregnet TLE satellit oprettet succesfuldt")
+                        satellite = EarthSatellite(line1, line2, 'Calculated TLE', ts)
+                        self.log_tle_message("✅ Calculated TLE satellite created successfully")
                     except Exception as e:
-                        self.log_tle_message(f"❌ Kunne ikke oprette satellit fra beregnet TLE: {str(e)}")
+                        self.log_tle_message(f"❌ Could not create satellite from calculated TLE: {str(e)}")
                         satellite = None
                 else:
-                    self.log_tle_message("❌ Beregnet TLE data mangler eller er tom")
+                    self.log_tle_message("❌ Calculated TLE data missing or empty")
                     satellite = None
                 
                 if satellite is not None:
-                    # Brug tidspunkter fra data
+                    # Use times from data
                     times = pd.to_datetime(df['DATE-OBS'])
                     t_center = times.iloc[len(times)//2]
                     
-                    # Generer tider +/- 45 min
+                    # Generate times +/- 45 min
                     time_range = [t_center + pd.Timedelta(seconds=delta) for delta in np.arange(-45*60, 45*60 + 5, 5)]
                     
-                    # Konverter til Skyfield format
+                    # Convert to Skyfield format
                     years = [t.year for t in time_range]
                     months = [t.month for t in time_range]
                     days = [t.day for t in time_range]
@@ -6124,35 +6323,35 @@ class TkinterDemo:
                     
                     ts_times = ts.utc(years, months, days, hours, minutes, seconds)
                     
-                    # Beregn positioner
+                    # Calculate positions
                     tle_positions = satellite.at(ts_times).position.km.T
                     
-                    # Plot bane
+                    # Plot orbit
                     fig.add_trace(go.Scatter3d(
                         x=tle_positions[:, 0],
                         y=tle_positions[:, 1],
                         z=tle_positions[:, 2],
                         mode='lines',
-                        name=f'Beregnet TLE ({self.tle_result["method"]})',
+                        name=f'Calculated TLE ({self.tle_result["method"]})',
                         line=dict(width=3, color='red')
                     ))
                 
-                    # Plot original TLE hvis tilgængelig og vi har gyldige tidsintervaller
+                    # Plot original TLE if available and we have valid time intervals
                     if 'TLE1' in df.columns and 'TLE2' in df.columns and 'ts_times' in locals():
                         original_tle1 = df['TLE1'].iloc[0]
                         original_tle2 = df['TLE2'].iloc[0]
                         
                         if pd.notna(original_tle1) and pd.notna(original_tle2) and original_tle1.strip() and original_tle2.strip():
-                            self.log_tle_message("Plotter original TLE...")
+                            self.log_tle_message("Plotting original TLE...")
                             
                             try:
                                 original_satellite = EarthSatellite(original_tle1, original_tle2, 'Original TLE', ts)
                                 
-                                # Beregn positioner for original TLE (samme tidsinterval)
+                                # Calculate positions for original TLE (same time interval)
                                 original_tle_positions = original_satellite.at(ts_times).position.km.T
                             
                                 
-                                # Plot original bane
+                                # Plot original orbit
                                 fig.add_trace(go.Scatter3d(
                                     x=original_tle_positions[:, 0],
                                     y=original_tle_positions[:, 1],
@@ -6162,30 +6361,30 @@ class TkinterDemo:
                                     line=dict(width=3, color='blue', dash='dot')
                                 ))
                                 
-                                self.log_tle_message("✅ Original TLE tilføjet til plot")
+                                self.log_tle_message("✅ Original TLE added to plot")
                                 
                             except Exception as e:
-                                self.log_tle_message(f"⚠️ Kunne ikke plotte original TLE: {str(e)}")
+                                self.log_tle_message(f"⚠️ Could not plot original TLE: {str(e)}")
                         else:
-                            self.log_tle_message("⚠️ Original TLE data mangler eller er tom")
+                            self.log_tle_message("⚠️ Original TLE data missing or empty")
                     else:
-                        self.log_tle_message("⚠️ TLE1/TLE2 kolonner ikke fundet i CSV eller ingen tidsinterval")
+                        self.log_tle_message("⚠️ TLE1/TLE2 columns not found in CSV or no time interval")
                 else:
-                    self.log_tle_message("⚠️ Kunne ikke oprette beregnet TLE satellit")
+                    self.log_tle_message("⚠️ Could not create calculated TLE satellite")
                     
             else:
-                self.log_tle_message("⚠️ Skyfield ikke tilgængelig, kan ikke vise beregnet bane fra TLE")
+                self.log_tle_message("⚠️ Skyfield not available, cannot show calculated orbit from TLE")
             
-            # Beregn satellitpositioner baseret på RA/DEC fra CSV og distance fra TLE
+            # Calculate satellite positions based on RA/DEC from CSV and distance from TLE
             if satellite is not None and 'Sat_RA_Behandlet' in df.columns and 'Sat_DEC_Behandlet' in df.columns:
-                self.log_tle_message(" Beregner satellitpositioner fra RA/DEC og TLE distance...")
+                self.log_tle_message("Calculating satellite positions from RA/DEC and TLE distance...")
                 
-                # Hent RA/DEC fra CSV
-                sat_ra_behandlet = df['Sat_RA_Behandlet'].values  # grader
-                sat_dec_behandlet = df['Sat_DEC_Behandlet'].values  # grader
+                # Get RA/DEC from CSV
+                sat_ra_behandlet = df['Sat_RA_Behandlet'].values  # degrees
+                sat_dec_behandlet = df['Sat_DEC_Behandlet'].values  # degrees
                 obs_times = pd.to_datetime(df['DATE-OBS'])
                 
-                # Konverter observationstider til Skyfield format
+                # Convert observation times to Skyfield format
                 obs_years = [t.year for t in obs_times]
                 obs_months = [t.month for t in obs_times]
                 obs_days = [t.day for t in obs_times]
@@ -6194,11 +6393,11 @@ class TkinterDemo:
                 obs_seconds = [t.second + t.microsecond/1e6 for t in obs_times]
                 
                 ts_obs_times = ts.utc(obs_years, obs_months, obs_days, obs_hours, obs_minutes, obs_seconds)
-                self.log_tle_message(f"Tider til sat {ts_obs_times}")
-                # Beregn satellitpositioner fra TLE på observationstidspunkterne
+                self.log_tle_message(f"Times for satellite {ts_obs_times}")
+                # Calculate satellite positions from TLE at observation times
                 tle_sat_positions = satellite.at(ts_obs_times).position.km
                 
-                # Beregn distance fra observatør til satellit (fra TLE)
+                # Calculate distance from observer to satellite (from TLE)
                 obs_x = df['X_obs'].values
                 obs_y = df['Y_obs'].values
                 obs_z = df['Z_obs'].values
@@ -6213,11 +6412,11 @@ class TkinterDemo:
                 
                 distances = np.array(distances)
                 if np.isnan(distances).any():
-                    self.log_tle_message("❌ Beregnede afstande indeholder NaN værdier")
+                    self.log_tle_message("❌ Calculated distances contain NaN values")
                 
                 
-                # Konverter RA/DEC + distance til ECI xyz koordinater
-                self.log_tle_message(" Konverterer RA/DEC/Distance til ECI xyz...")
+                # Convert RA/DEC + distance to ECI xyz coordinates
+                self.log_tle_message("Converting RA/DEC/Distance to ECI xyz...")
                 sat_xyz_from_radec = []
                 
                 for i in range(len(sat_ra_behandlet)):
@@ -6225,12 +6424,12 @@ class TkinterDemo:
                     dec_rad = np.radians(sat_dec_behandlet[i])
                     dist = distances[i]
                     
-                    # Sfæriske til kartesiske koordinater (relative til observatør)
+                    # Spherical to Cartesian coordinates (relative to observer)
                     x_rel = dist * np.cos(dec_rad) * np.cos(ra_rad)
                     y_rel = dist * np.cos(dec_rad) * np.sin(ra_rad)
                     z_rel = dist * np.sin(dec_rad)
                     
-                    # Tilføj observatørens position for at få absolutte ECI koordinater
+                    # Add observer position to get absolute ECI coordinates
                     x_abs = x_rel + obs_positions[i][0]
                     y_abs = y_rel + obs_positions[i][1]
                     z_abs = z_rel + obs_positions[i][2]
@@ -6239,29 +6438,29 @@ class TkinterDemo:
                 
                 sat_xyz_from_radec = np.array(sat_xyz_from_radec)
                 
-                # Plot satellitpositioner beregnet fra RA/DEC og TLE distance
+                # Plot satellite positions calculated from RA/DEC and TLE distance
                 fig.add_trace(go.Scatter3d(
                     x=sat_xyz_from_radec[:, 0],
                     y=sat_xyz_from_radec[:, 1],
                     z=sat_xyz_from_radec[:, 2],
                     mode='markers',
-                    name='Satellit pos. obs (RA/DEC + TLE dist.)',
+                    name='Satellite pos. obs (RA/DEC + TLE dist.)',
                     marker=dict(size=5, color='red', symbol='diamond')
                 ))
                 
-                self.log_tle_message(f"✅ Tilføjet {len(sat_xyz_from_radec)} satellitpositioner fra RA/DEC")
+                self.log_tle_message(f"✅ Added {len(sat_xyz_from_radec)} satellite positions from RA/DEC")
 
-                # Plot satellitpositioner fra TLE
+                # Plot satellite positions from TLE
                 fig.add_trace(go.Scatter3d(
                     x=self.tle_calculation_data['sat_pos_tle_original'][:, 0],
                     y=self.tle_calculation_data['sat_pos_tle_original'][:, 1],
                     z=self.tle_calculation_data['sat_pos_tle_original'][:, 2],
                     mode='markers',
-                    name='Satellit pos. TLE',
+                    name='Satellite pos. TLE',
                     marker=dict(size=5, color='blue', symbol='diamond')
                 ))
             
-            # Plot observationspunkter
+            # Plot observation points
             obs_x = df['X_obs'].values
             obs_y = df['Y_obs'].values
             obs_z = df['Z_obs'].values
@@ -6271,7 +6470,7 @@ class TkinterDemo:
                 y=obs_y,
                 z=obs_z,
                 mode='markers',
-                name='Observatør positioner',
+                name='Observer positions',
                 marker=dict(size=3, color='orange', symbol='circle')
             ))
             
@@ -6283,52 +6482,52 @@ class TkinterDemo:
                     zaxis_title='Z (km)',
                     aspectmode='data'
                 ),
-                title=f'TLE Beregning ({self.tle_result["method"]} metode)',
+                title=f'TLE Calculation ({self.tle_result["method"]} method)',
                 showlegend=True
             )
             
-            # Vis plot
+            # Show plot
             pyo.plot(fig, filename='tle_3d_plot.html', auto_open=True)
             
-            self.log_tle_message("✅ 3D plot vist i browser")
+            self.log_tle_message("✅ 3D plot shown in browser")
             
         except Exception as e:
-            error_msg = f"Fejl ved plot: {str(e)}"
+            error_msg = f"Error plotting: {str(e)}"
             self.log_tle_message(f"❌ {error_msg}")
-            messagebox.showerror("Fejl", error_msg)
+            messagebox.showerror("Error", error_msg)
     
     def save_tle_results(self):
-        """Gemmer TLE resultater til CSV filen"""
+        """Save TLE results to CSV file"""
         try:
             if self.tle_result is None:
-                messagebox.showwarning("Ingen resultat", "Beregn først en TLE")
+                messagebox.showwarning("No Result", "Calculate a TLE first")
                 return
             
             if self.tle_csv_directory is None:
-                messagebox.showwarning("Ingen fil", "Indlæs først en CSV-fil")
+                messagebox.showwarning("No File", "Load a CSV file first")
                 return
             
-            self.log_tle_message("Gemmer resultater til CSV...")
+            self.log_tle_message("Saving results to CSV...")
             
-            # Find CSV filen igen
+            # Find CSV file again
             csv_files = [f for f in os.listdir(self.tle_csv_directory) if f.startswith('data') and f.endswith('.csv')]
             
             if not csv_files:
-                messagebox.showerror("Fejl", "Kunne ikke finde CSV-fil i mappen")
+                messagebox.showerror("Error", "Could not find CSV file in folder")
                 return
             
             csv_path = os.path.join(self.tle_csv_directory, csv_files[0])
             
-            # Indlæs CSV
+            # Load CSV
             df = pd.read_csv(csv_path)
             
-            # Tilføj nye kolonner med TLE data
+            # Add new columns with TLE data
             line1, line2 = self.tle_result['tle_lines']
             df['Calculated_TLE_Line1'] = line1
             df['Calculated_TLE_Line2'] = line2
             df['TLE_Method'] = self.tle_result['method']
             
-            # Tilføj orbital elementer
+            # Add orbital elements
             coe = self.tle_result['coe']
             df['TLE_a_km'] = coe[0]
             df['TLE_ecc'] = coe[1]
@@ -6337,7 +6536,7 @@ class TkinterDemo:
             df['TLE_argp_deg'] = coe[4]
             df['TLE_nu_deg'] = coe[5]
             
-            # Tilføj position og hastighed
+            # Add position and velocity
             r = self.tle_result['r']
             v = self.tle_result['v']
             df['TLE_r_x_km'] = r[0]
@@ -6347,20 +6546,20 @@ class TkinterDemo:
             df['TLE_v_y_kms'] = v[1]
             df['TLE_v_z_kms'] = v[2]
             
-            # Gem opdateret CSV
+            # Save updated CSV
             df.to_csv(csv_path, index=False)
             
-            self.log_tle_message(f"✅ Resultater gemt til: {csv_files[0]}")
-            self.log_tle_message(f"Tilføjet kolonner:")
+            self.log_tle_message(f"✅ Results saved to: {csv_files[0]}")
+            self.log_tle_message(f"Added columns:")
             self.log_tle_message(f"- Calculated_TLE_Line1, Calculated_TLE_Line2")
-            self.log_tle_message(f"- TLE_Method, orbital elementer (a,e,i,Ω,ω,ν)")
-            self.log_tle_message(f"- Position (r_x,r_y,r_z) og hastighed (v_x,v_y,v_z)")
+            self.log_tle_message(f"- TLE_Method, orbital elements (a,e,i,Ω,ω,ν)")
+            self.log_tle_message(f"- Position (r_x,r_y,r_z) and velocity (v_x,v_y,v_z)")
             
             
         except Exception as e:
-            error_msg = f"Fejl ved gemning: {str(e)}"
+            error_msg = f"Error saving: {str(e)}"
             self.log_tle_message(f"❌ {error_msg}")
-            messagebox.showerror("Fejl", error_msg)
+            messagebox.showerror("Error", error_msg)
 
 if __name__ == "__main__":
     root = tk.Tk()
