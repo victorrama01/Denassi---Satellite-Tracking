@@ -115,7 +115,7 @@ def create_leapfrog_tab(self, notebook):
     ttk.Label(params_frame, text="Tid mellem obs (s):").grid(row=1, column=2, sticky='w', padx=5, pady=5)
     self.leapfrog_interval_entry = ttk.Entry(params_frame, width=10)
     self.leapfrog_interval_entry.grid(row=1, column=3, padx=5, pady=5)
-    self.leapfrog_interval_entry.insert(0, "15.0")
+    self.leapfrog_interval_entry.insert(0, "10.0")
     
     # PWI4 status
     if PWI4_AVAILABLE:
@@ -164,6 +164,14 @@ def create_leapfrog_tab(self, notebook):
     # Clear log button
     ttk.Button(log_frame, text="Ryd Log", 
               command=lambda: self.log_text.delete(1.0, tk.END)).pack(pady=2)
+    
+    # Billedvisningssektion under loggen (højre side)
+    image_frame = ttk.LabelFrame(right_frame, text="Seneste Billede")
+    image_frame.pack(fill='x', pady=5)
+    
+    # Label til at vise billede
+    self.leapfrog_image_label = ttk.Label(image_frame, text="Venter på billede...")
+    self.leapfrog_image_label.pack(pady=10)
 
 def log_message(self, message):
     """Tilføj besked til log"""
@@ -171,6 +179,38 @@ def log_message(self, message):
     self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
     self.log_text.see(tk.END)
     self.root.update()
+
+def display_leapfrog_image(self, image_data):
+    """Vis downscaled version af billedet under loggen"""
+    try:
+        from PIL import Image, ImageTk
+        from scipy.ndimage import zoom
+        
+        # Downscale til visning
+        target_height, target_width = 200, 300
+        original_height, original_width = image_data.shape
+        scale_y = target_height / original_height
+        scale_x = target_width / original_width
+        
+        downscaled_image = zoom(image_data, (scale_y, scale_x), order=1)
+        downscaled_image = np.clip(downscaled_image, None, 800)
+        
+        # Normaliser til 0-255 for visning
+        normalized = ((downscaled_image - downscaled_image.min()) / (downscaled_image.max() - downscaled_image.min() + 1e-8) * 255).astype(np.uint8)
+        
+        # Konverter til PIL Image
+        pil_image = Image.fromarray(normalized, mode='L')
+        
+        # Konverter til PhotoImage for Tkinter visning
+        photo_image = ImageTk.PhotoImage(pil_image)
+        
+        # Opdater label
+        self.leapfrog_image_label.config(image=photo_image, text="")
+        self.leapfrog_image_label.image = photo_image  # Bevar reference
+        self.root.update()
+        
+    except Exception as e:
+        log_message(self, f"Fejl ved visning af billede: {str(e)}")
 
 def get_selected_satellite(self):
     """Henter den valgte satellit fra satellitlisten"""
@@ -788,6 +828,9 @@ def _execute_leapfrog_observation(self):
                     pw4_status = leapfrog_result['pw4_status']
                     
                     log_message(self, f"LeapFrog timing nøjagtighed: {leapfrog_result['timing_accuracy']:.1f}ms")
+                    
+                    # Vis billede under loggen
+                    display_leapfrog_image(self, image_data)
                     
                     # Hent filter information
                     filter_name = self.get_current_filter_name()
