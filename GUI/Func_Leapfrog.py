@@ -149,20 +149,10 @@ def create_leapfrog_tab(self, notebook):
     self.leapfrog_interval_entry.grid(row=1, column=3, padx=5, pady=5)
     self.leapfrog_interval_entry.insert(0, "15.0")
     
-    # Kamera timing parametre
-    ttk.Label(params_frame, text="Kamera start før (s):").grid(row=2, column=0, sticky='w', padx=5, pady=5)
-    self.leapfrog_camera_start_entry = ttk.Entry(params_frame, width=10)
-    self.leapfrog_camera_start_entry.grid(row=2, column=1, padx=5, pady=5)
-    self.leapfrog_camera_start_entry.insert(0, "2.0")
-    
-    ttk.Label(params_frame, text="Kamera stop efter (s):").grid(row=2, column=2, sticky='w', padx=5, pady=5)
-    self.leapfrog_camera_stop_entry = ttk.Entry(params_frame, width=10)
-    self.leapfrog_camera_stop_entry.grid(row=2, column=3, padx=5, pady=5)
-    self.leapfrog_camera_stop_entry.insert(0, "2.0")
-    
-    ttk.Label(params_frame, text="Slew delay (s):").grid(row=3, column=0, sticky='w', padx=5, pady=5)
+    # Slew delay
+    ttk.Label(params_frame, text="Slew delay (s):").grid(row=2, column=0, sticky='w', padx=5, pady=5)
     self.leapfrog_slew_delay_entry = ttk.Entry(params_frame, width=10)
-    self.leapfrog_slew_delay_entry.grid(row=3, column=1, padx=5, pady=5)
+    self.leapfrog_slew_delay_entry.grid(row=2, column=1, padx=5, pady=5)
     self.leapfrog_slew_delay_entry.insert(0, "0.5")
     
     # PWI4 status
@@ -658,11 +648,10 @@ def _execute_leapfrog_observation(self):
         pw4_url = self.leapfrog_pw4_url_entry.get().strip()
         exposure_time = float(self.leapfrog_exposure_time_entry.get())
         interval_between_obs = float(self.leapfrog_interval_entry.get())
-        
-        # Hent kamera timing parametre
-        camera_start_before = float(self.leapfrog_camera_start_entry.get())
-        camera_stop_after = float(self.leapfrog_camera_stop_entry.get())
         slew_delay = float(self.leapfrog_slew_delay_entry.get())
+        
+        # Fast kamera start før planlagt tid (0.7 sekunder)
+        camera_start_before = 0.7
         
         # Valider parametre
         if x_binning < 1 or y_binning < 1 or x_binning > 16 or y_binning > 16:
@@ -675,14 +664,6 @@ def _execute_leapfrog_observation(self):
             
         if interval_between_obs < 0 or interval_between_obs > 300:
             messagebox.showerror("Ugyldig interval", "Interval mellem observationer skal være mellem 0 og 300 sekunder")
-            return
-            
-        if camera_start_before < 0 or camera_start_before > 30:
-            messagebox.showerror("Ugyldig kamera start tid", "Kamera start tid skal være mellem 0 og 30 sekunder")
-            return
-            
-        if camera_stop_after < 0 or camera_stop_after > 30:
-            messagebox.showerror("Ugyldig kamera stop tid", "Kamera stop tid skal være mellem 0 og 30 sekunder")
             return
             
         if slew_delay < 0 or slew_delay > 10:
@@ -794,9 +775,9 @@ def _execute_leapfrog_observation(self):
             dec = float(row['Sat_DEC'])
             planned_time = row['DATE-OBS']  # Dette er i lokal tid
             
-            # Beregn tider i lokal tid med brugervalgte værdier
+            # Beregn tider i lokal tid
             camera_start_time = planned_time - timedelta(seconds=camera_start_before)
-            camera_stop_time = planned_time + timedelta(seconds=camera_stop_after)
+            camera_stop_time = planned_time + timedelta(seconds=exposure_time)
             slew_next_time = camera_stop_time + timedelta(seconds=slew_delay)
             
             # Konverter RA til decimal timer
@@ -823,27 +804,22 @@ def _execute_leapfrog_observation(self):
             
             log_message(self, "Starter eksponering")
             
-            # Start eksponering
-            current_time = datetime.now()
-            image_counter = 1
-            
-            while current_time < camera_stop_time and not self.stop_observation:
-                if current_time + timedelta(seconds=exposure_time) > camera_stop_time:
-                    break
+            # Tag et billede ved det planlagte tidspunkt
+            try:
+                # *** OPTIMERET LEAPFROG EKSPONERING ***
+                leapfrog_result = self.optimized_camera_exposure_with_timing(
+                    camera=camera, 
+                    exposure_time=exposure_time, 
+                    pw4_client=telescope,
+                    pw4_url=pw4_url,
+                    obstype='LeapFrog'
+                )
                 
-                try:
-                    # *** OPTIMERET LEAPFROG EKSPONERING ***
-                    leapfrog_result = self.optimized_camera_exposure_with_timing(
-                        camera=camera, 
-                        exposure_time=exposure_time, 
-                        pw4_client=telescope,
-                        pw4_url=pw4_url,
-                        obstype='LeapFrog'
-                    )
-                    
-                    if leapfrog_result is None:  # Afbrudt af bruger
+                if leapfrog_result is None:  # Afbrudt af bruger
+                    if self.stop_observation:
+                        log_message(self, "Observation stoppet af bruger")
                         break
-                    
+                else:
                     # Udpak resultater fra optimeret timing
                     image_data = leapfrog_result['image_data']
                     exposure_start_time = leapfrog_result['exposure_start_time']
@@ -851,9 +827,6 @@ def _execute_leapfrog_observation(self):
                     pw4_status = leapfrog_result['pw4_status']
                     
                     log_message(self, f"LeapFrog timing nøjagtighed: {leapfrog_result['timing_accuracy']:.1f}ms")
-                    
-                    if self.stop_observation:
-                        break
                     
                     # Hent filter information
                     filter_name = self.get_current_filter_name()
@@ -881,7 +854,7 @@ def _execute_leapfrog_observation(self):
                     
                     # Gem FITS fil med komplet header
                     timestamp = datetime.now().strftime("%H%M%S")
-                    filename = f"LeapFrog_{safe_sat_name}_{norad_id}_{timestamp}_{image_counter:03d}.fits"
+                    filename = f"LeapFrog_{safe_sat_name}_{norad_id}_{timestamp}_001.fits"
                     filepath = os.path.join(session_dir, filename)
                     
                     # Konverter til uint16 for FITS
@@ -890,13 +863,10 @@ def _execute_leapfrog_observation(self):
                     hdu = fits.PrimaryHDU(data=image_data_uint16, header=header)
                     hdu.writeto(filepath, overwrite=True)
                     
-                    log_message(self, f"Billede {image_counter} gemt: {filename}")
-                    image_counter += 1
+                    log_message(self, f"Billede gemt: {filename}")
                     
-                except Exception as e:
-                    log_message(self, f"Fejl ved tag af billede {image_counter}: {str(e)}")
-                
-                current_time = datetime.now()
+            except Exception as e:
+                log_message(self, f"Fejl ved tag af billede: {str(e)}")
             
             # Hvis der er flere punkter, planlæg næste slew
             if i < len(df_work) - 1:
