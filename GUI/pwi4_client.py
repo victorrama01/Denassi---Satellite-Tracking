@@ -187,27 +187,11 @@ class PWI4Telescope:
         Get current telescope status.
         
         Returns:
-            dict with status information
+            Raw response dict from PWI4 /status endpoint.
+            Returns None on error.
         """
         try:
-            status = self.request("/status")
-            return {
-                'connected': status['mount']['is_connected'],
-                'slewing': status['mount']['is_slewing'],
-                'tracking': status['mount']['is_tracking'],
-                'ra_j2000_hours': status['mount']['ra_j2000_hours'],
-                'dec_j2000_degs': status['mount']['dec_j2000_degs'],
-                'ra_apparent_hours': status['mount']['ra_apparent_hours'],
-                'dec_apparent_degs': status['mount']['dec_apparent_degs'],
-                'altitude_degs': status['mount']['altitude_degs'],
-                'azimuth_degs': status['mount']['azimuth_degs'],
-                'julian_date': status['mount']['julian_date'],
-                'field_angle_degs': status['mount']['field_angle_here_degs'],
-                'distance_to_sun_degs': status['mount']['distance_to_sun_degs'],
-                'latitude_degs': status['site']['latitude_degs'],
-                'longitude_degs': status['site']['longitude_degs'],
-                'height_meters': status['site']['height_meters']
-            }
+            return self.request("/status")
         except Exception as e:
             print(f"Fejl ved hentning af status: {e}")
             return None
@@ -227,7 +211,7 @@ class PWI4Telescope:
         while time.time() - start_time < timeout_seconds:
             try:
                 status = self.get_status()
-                if status and not status['slewing']:
+                if status and not status['mount']['is_slewing']:
                     self.slewing = False
                     return True
                 time.sleep(0.5)
@@ -242,7 +226,7 @@ class PWI4Telescope:
         try:
             status = self.get_status()
             if status:
-                self.slewing = status['slewing']
+                self.slewing = status['mount']['is_slewing']
                 return self.slewing
         except:
             pass

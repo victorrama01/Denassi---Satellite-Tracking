@@ -819,27 +819,27 @@ def optimized_camera_exposure_with_timing(self, camera, exposure_time, pw4_clien
             if status:
                 pw4_status = {
                     'mount': {
-                        'ra_apparent_hours': status['ra_apparent_hours'],
-                        'dec_apparent_degs': status['dec_apparent_degs'],
-                        'ra_j2000_hours': status['ra_j2000_hours'],
-                        'dec_j2000_degs': status['dec_j2000_degs'],
-                        'ra_apparent_degs': status['ra_apparent_hours'] * 15.0,
-                        'ra_j2000_degs': status['ra_j2000_hours'] * 15.0,
-                        'is_slewing': status['slewing'],
-                        'is_tracking': status['tracking'],
-                        'altitude_degs': status['altitude_degs'],
-                        'azimuth_degs': status['azimuth_degs'],
-                        'julian_date': status['julian_date'],
-                        'distance_to_sun_degs': status['distance_to_sun_degs'],
-                        'field_angle_degs': status['field_angle_degs']
+                        'ra_apparent_hours': status['mount']['ra_apparent_hours'],
+                        'dec_apparent_degs': status['mount']['dec_apparent_degs'],
+                        'ra_j2000_hours': status['mount']['ra_j2000_hours'],
+                        'dec_j2000_degs': status['mount']['dec_j2000_degs'],
+                        'ra_apparent_degs': status['mount']['ra_apparent_hours'] * 15.0,
+                        'ra_j2000_degs': status['mount']['ra_j2000_hours'] * 15.0,
+                        'is_slewing': status['mount']['is_slewing'],
+                        'is_tracking': status['mount']['is_tracking'],
+                        'altitude_degs': status['mount']['altitude_degs'],
+                        'azimuth_degs': status['mount']['azimuth_degs'],
+                        'julian_date': status['mount']['julian_date'],
+                        'distance_to_sun_degs': status['mount']['distance_to_sun_degs'],
+                        'field_angle_degs': status['mount']['field_angle_here_degs']
                     },
                     'site': {
-                        'latitude_degs': status['latitude_degs'],
-                        'longitude_degs': status['longitude_degs'],
-                        'height_meters': status['height_meters']
+                        'latitude_degs': status['site']['latitude_degs'],
+                        'longitude_degs': status['site']['longitude_degs'],
+                        'height_meters': status['site']['height_meters']
                     },
                     'pwi4': {
-                        'version': 'PWI4 HTTP API'
+                        'version': status.get('pwi4', {}).get('version', 'PWI4 HTTP API')
                     }
                 }
         elif obstype == 'starfield':
