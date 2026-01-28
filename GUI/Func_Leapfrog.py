@@ -124,7 +124,7 @@ def create_leapfrog_tab(self, notebook):
     self.leapfrog_destination_entry.insert(0, os.getcwd())
     
     ttk.Button(params_frame, text="Gennemse", 
-              command=lambda: self.browse_leapfrog_destination()).grid(row=2, column=3, padx=5, pady=5)
+              command=self.browse_leapfrog_destination).grid(row=2, column=3, padx=5, pady=5)
     
     # PWI4 status
     if PWI4_AVAILABLE:
