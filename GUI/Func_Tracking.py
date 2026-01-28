@@ -109,7 +109,7 @@ def create_tracking_tab(self, notebook):
     self.tracking_destination_entry.insert(0, os.getcwd())
     
     ttk.Button(params_frame, text="Gennemse", 
-              command=self.browse_tracking_destination).grid(row=2, column=2, padx=5, pady=5)
+              command=lambda: browse_tracking_destination(self)).grid(row=2, column=2, padx=5, pady=5)
     
     # Test forbindelse knap (binning styres nu fra kameraindstillinger)
     ttk.Button(params_frame, text="Test PlaneWave4 Forbindelse", 
