@@ -766,7 +766,7 @@ def run_tracking_observation(self):
                 # Vis billede under tracking loggen
                 display_tracking_image(self, img_data)
                 
-                if self.stop_observation:
+                if self.stop_tracking:
                     break
 
                 # Generer filnavn med nyt format
