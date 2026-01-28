@@ -102,13 +102,22 @@ def create_tracking_tab(self, notebook):
     self.pw4_url_entry.grid(row=1, column=3, padx=5, pady=5)
     self.pw4_url_entry.insert(0, "http://localhost:8220")
     
+    # Destinationsmappen
+    ttk.Label(params_frame, text="Destinationsmapp:").grid(row=2, column=0, sticky='w', padx=5, pady=5)
+    self.tracking_destination_entry = ttk.Entry(params_frame, width=20)
+    self.tracking_destination_entry.grid(row=2, column=1, columnspan=1, padx=5, pady=5)
+    self.tracking_destination_entry.insert(0, os.getcwd())
+    
+    ttk.Button(params_frame, text="Gennemse", 
+              command=lambda: self.browse_tracking_destination()).grid(row=2, column=2, padx=5, pady=5)
+    
     # Test forbindelse knap (binning styres nu fra kameraindstillinger)
     ttk.Button(params_frame, text="Test PlaneWave4 Forbindelse", 
-              command=self.test_pw4_connection).grid(row=2, column=0, columnspan=2, pady=10, padx=5)
+              command=self.test_pw4_connection).grid(row=3, column=0, columnspan=2, pady=10, padx=5)
     
     # Status display
     self.pw4_status_label = ttk.Label(params_frame, text="Status: Ikke testet", foreground='gray')
-    self.pw4_status_label.grid(row=3, column=2, columnspan=2, pady=10, padx=5, sticky='w')
+    self.pw4_status_label.grid(row=4, column=2, columnspan=2, pady=10, padx=5, sticky='w')
     
     # Tracking control sektion (venstre side)
     control_frame = ttk.LabelFrame(left_frame, text="Tracking Control")
@@ -168,6 +177,14 @@ def create_tracking_tab(self, notebook):
     # Clear log button
     ttk.Button(log_frame, text="Ryd Log", 
               command=lambda: self.tracking_log_text.delete(1.0, tk.END)).pack(pady=2)
+    
+    # Billedvisningssektion under loggen (højre side)
+    tracking_image_frame = ttk.LabelFrame(right_frame, text="Seneste Billede")
+    tracking_image_frame.pack(fill='x', pady=5)
+    
+    # Label til at vise billede
+    self.tracking_image_label = ttk.Label(tracking_image_frame, text="Venter på billede...")
+    self.tracking_image_label.pack(pady=10)
 
 
 def tracking_log_message(self, message):
@@ -176,6 +193,49 @@ def tracking_log_message(self, message):
     self.tracking_log_text.insert(tk.END, f"[{timestamp}] {message}\n")
     self.tracking_log_text.see(tk.END)
     self.root.update()
+
+def browse_tracking_destination(self):
+    """Vælg destinationsmappe for Tracking observationsfiler"""
+    from tkinter.filedialog import askdirectory
+    
+    directory = askdirectory(title="Vælg destinationsmappe for Tracking filer")
+    if directory:
+        self.tracking_destination_entry.delete(0, tk.END)
+        self.tracking_destination_entry.insert(0, directory)
+        tracking_log_message(self, f"Destinationsmapp sat til: {directory}")
+
+def display_tracking_image(self, image_data):
+    """Vis downscaled version af billedet under tracking loggen"""
+    try:
+        import numpy as np
+        from PIL import Image, ImageTk
+        from scipy.ndimage import zoom
+        
+        # Downscale til visning
+        target_height, target_width = 200, 300
+        original_height, original_width = image_data.shape
+        scale_y = target_height / original_height
+        scale_x = target_width / original_width
+        
+        downscaled_image = zoom(image_data, (scale_y, scale_x), order=1)
+        downscaled_image = np.clip(downscaled_image, None, 800)
+        
+        # Normaliser til 0-255 for visning
+        normalized = ((downscaled_image - downscaled_image.min()) / (downscaled_image.max() - downscaled_image.min() + 1e-8) * 255).astype(np.uint8)
+        
+        # Konverter til PIL Image
+        pil_image = Image.fromarray(normalized, mode='L')
+        
+        # Konverter til PhotoImage for Tkinter visning
+        photo_image = ImageTk.PhotoImage(pil_image)
+        
+        # Opdater label
+        self.tracking_image_label.config(image=photo_image, text="")
+        self.tracking_image_label.image = photo_image  # Bevar reference
+        self.root.update()
+        
+    except Exception as e:
+        tracking_log_message(self, f"Fejl ved visning af billede: {str(e)}")
 
 
 def test_pw4_connection(self):
@@ -565,7 +625,12 @@ def run_tracking_observation(self):
                 safe_sat_name = safe_sat_name.replace(' ', '_')
                 norad_id = self.selected_tracking_satellite['NORAD']
                 
-                output_dir = f"Tracking_{safe_sat_name}_{norad_id}_{session_date}"
+                # Hent destinationsmappe fra UI eller brug standard
+                base_dir = self.tracking_destination_entry.get().strip()
+                if not base_dir or not os.path.isdir(base_dir):
+                    base_dir = os.getcwd()
+                
+                output_dir = os.path.join(base_dir, f"Tracking_{safe_sat_name}_{norad_id}_{session_date}")
                 
                 try:
                     os.makedirs(output_dir, exist_ok=True)
@@ -621,6 +686,9 @@ def run_tracking_observation(self):
                     star_pw4_status = star_result['pw4_status']
                     
                     self.tracking_log_message(f"Stjernehimmel timing nøjagtighed: {star_result['timing_accuracy']:.1f}ms")
+                    
+                    # Vis billede under tracking loggen
+                    display_tracking_image(self, star_img_data)
                     
                     # Generer filnavn for stjernehimmel billede
                     star_filename = f"Starfield_ref_{safe_sat_name}_{norad_id}_001.fits"
@@ -699,6 +767,9 @@ def run_tracking_observation(self):
                 pw4_status = satellite_result['pw4_status']
                 
                 self.tracking_log_message(f"Satellit timing nøjagtighed: {satellite_result['timing_accuracy']:.1f}ms")
+                
+                # Vis billede under tracking loggen
+                display_tracking_image(self, img_data)
                 
                 if self.stop_observation:
                     break
