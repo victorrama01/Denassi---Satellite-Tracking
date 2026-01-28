@@ -117,6 +117,15 @@ def create_leapfrog_tab(self, notebook):
     self.leapfrog_interval_entry.grid(row=1, column=3, padx=5, pady=5)
     self.leapfrog_interval_entry.insert(0, "10.0")
     
+    # Destinationsmappen
+    ttk.Label(params_frame, text="Destinationsmapp:").grid(row=2, column=0, sticky='w', padx=5, pady=5)
+    self.leapfrog_destination_entry = ttk.Entry(params_frame, width=30)
+    self.leapfrog_destination_entry.grid(row=2, column=1, columnspan=2, padx=5, pady=5)
+    self.leapfrog_destination_entry.insert(0, os.getcwd())
+    
+    ttk.Button(params_frame, text="Gennemse", 
+              command=lambda: self.browse_leapfrog_destination()).grid(row=2, column=3, padx=5, pady=5)
+    
     # PWI4 status
     if PWI4_AVAILABLE:
         pwi4_status = "PWI4 bibliotek tilgængeligt"
@@ -211,6 +220,16 @@ def display_leapfrog_image(self, image_data):
         
     except Exception as e:
         log_message(self, f"Fejl ved visning af billede: {str(e)}")
+
+def browse_leapfrog_destination(self):
+    """Vælg destinationsmappe for LeapFrog observationsfiler"""
+    from tkinter.filedialog import askdirectory
+    
+    directory = askdirectory(title="Vælg destinationsmappe for LeapFrog filer")
+    if directory:
+        self.leapfrog_destination_entry.delete(0, tk.END)
+        self.leapfrog_destination_entry.insert(0, directory)
+        log_message(self, f"Destinationsmapp sat til: {directory}")
 
 def get_selected_satellite(self):
     """Henter den valgte satellit fra satellitlisten"""
@@ -679,7 +698,12 @@ def _execute_leapfrog_observation(self):
         safe_sat_name = "".join(c for c in sat_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
         safe_sat_name = safe_sat_name.replace(' ', '_')
         
-        session_dir = os.path.join(os.getcwd(), f"LeapFrog_{safe_sat_name}_{norad_id}_{session_date}")
+        # Hent destinationsmappe fra UI eller brug standard
+        base_dir = self.leapfrog_destination_entry.get().strip()
+        if not base_dir or not os.path.isdir(base_dir):
+            base_dir = os.getcwd()
+        
+        session_dir = os.path.join(base_dir, f"LeapFrog_{safe_sat_name}_{norad_id}_{session_date}")
         os.makedirs(session_dir, exist_ok=True)
         
         log_message(self, f"Satellit: {sat_name}")
