@@ -57,13 +57,20 @@ def create_leapfrog_tab(self, notebook):
     # Nu brug scrollable_frame som container i stedet for leapfrog_frame
     main_container = ttk.Frame(scrollable_frame)
     main_container.pack(fill='both', expand=True, padx=10, pady=10)
+    main_container.columnconfigure(0, weight=2)  # Venstre kolonne får mere vægt
+    main_container.columnconfigure(1, weight=1)  # Højre kolonne får mindre vægt
+    main_container.rowconfigure(0, weight=1)
     
     # Opret to kolonner: venstre for widgets, højre for log
     left_frame = ttk.Frame(main_container)
-    left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+    left_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 5))
+    left_frame.columnconfigure(0, weight=1)
+    left_frame.rowconfigure(0, weight=1)
     
     right_frame = ttk.Frame(main_container) 
-    right_frame.pack(side='right', fill='both', expand=False, padx=(5, 0))
+    right_frame.grid(row=0, column=1, sticky='nsew', padx=(5, 0))
+    right_frame.columnconfigure(0, weight=1)
+    right_frame.rowconfigure(0, weight=1)
     
     # Satelit valg sektion (venstre side)
     selection_frame = ttk.LabelFrame(left_frame, text="Satelit Valg")
@@ -83,14 +90,6 @@ def create_leapfrog_tab(self, notebook):
     
     self.sat_info_text = tk.Text(info_frame, height=3, wrap='word')
     self.sat_info_text.pack(fill='x', padx=5, pady=5)
-    
-    # Plot sektion (venstre side)
-    if PLOTLY_AVAILABLE:
-        plot_frame = ttk.LabelFrame(left_frame, text="3D Plot")
-        plot_frame.pack(fill='x', pady=(0, 10))
-        
-        ttk.Button(plot_frame, text="Vis 3D Plot", 
-                  command=self.show_leapfrog_plot).pack(pady=5)
     
     # Observation control sektion (venstre side)
     control_frame = ttk.LabelFrame(left_frame, text="Observation Control")
@@ -135,13 +134,13 @@ def create_leapfrog_tab(self, notebook):
         status_color = 'orange'
     
     status_label = ttk.Label(control_frame, text=f"Status: {pwi4_status}")
-    status_label.pack(pady=2)
+    status_label.pack(pady=2, expand=False)
     if not PWI4_AVAILABLE:
         status_label.config(foreground='orange')
     
     # Control knapper
     control_button_frame = ttk.Frame(control_frame)
-    control_button_frame.pack(pady=5)
+    control_button_frame.pack(pady=5, expand=True)
     
     self.start_obs_btn = ttk.Button(control_button_frame, text="Start LeapFrog Observation", 
                                    command=self.start_leapfrog_observation)
@@ -154,10 +153,6 @@ def create_leapfrog_tab(self, notebook):
     # Log sektion (højre side)
     log_frame = ttk.LabelFrame(right_frame, text="Observation Log")
     log_frame.pack(fill='both', expand=True)
-    
-    # Sæt en passende bredde på log området
-    right_frame.configure(width=420)
-    right_frame.pack_propagate(False)
     
     # Log text widget med scrollbar
     log_container = ttk.Frame(log_frame)

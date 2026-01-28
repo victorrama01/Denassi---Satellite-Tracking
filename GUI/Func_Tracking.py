@@ -50,13 +50,20 @@ def create_tracking_tab(self, notebook):
     # Nu brug scrollable_frame som container
     main_container = ttk.Frame(scrollable_frame)
     main_container.pack(fill='both', expand=True, padx=10, pady=10)
+    main_container.columnconfigure(0, weight=2)  # Venstre kolonne får mere vægt
+    main_container.columnconfigure(1, weight=1)  # Højre kolonne får mindre vægt
+    main_container.rowconfigure(0, weight=1)
     
     # Opret to kolonner: venstre for widgets, højre for log
     left_frame = ttk.Frame(main_container)
-    left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+    left_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 5))
+    left_frame.columnconfigure(0, weight=1)
+    left_frame.rowconfigure(0, weight=1)
     
     right_frame = ttk.Frame(main_container) 
-    right_frame.pack(side='right', fill='both', expand=False, padx=(5, 0))
+    right_frame.grid(row=0, column=1, sticky='nsew', padx=(5, 0))
+    right_frame.columnconfigure(0, weight=1)
+    right_frame.rowconfigure(0, weight=1)
     
     # Satelit valg sektion (venstre side)
     selection_frame = ttk.LabelFrame(left_frame, text="Satelit Valg")
@@ -111,14 +118,6 @@ def create_tracking_tab(self, notebook):
     ttk.Button(params_frame, text="Gennemse", 
               command=lambda: browse_tracking_destination(self)).grid(row=2, column=2, padx=5, pady=5)
     
-    # Test forbindelse knap (binning styres nu fra kameraindstillinger)
-    ttk.Button(params_frame, text="Test PlaneWave4 Forbindelse", 
-              command=self.test_pw4_connection).grid(row=3, column=0, columnspan=2, pady=10, padx=5)
-    
-    # Status display
-    self.pw4_status_label = ttk.Label(params_frame, text="Status: Ikke testet", foreground='gray')
-    self.pw4_status_label.grid(row=4, column=2, columnspan=2, pady=10, padx=5, sticky='w')
-    
     # Tracking control sektion (venstre side)
     control_frame = ttk.LabelFrame(left_frame, text="Tracking Control")
     control_frame.pack(fill='x', pady=(0, 10))
@@ -158,10 +157,6 @@ def create_tracking_tab(self, notebook):
     # Tracking log sektion (højre side)
     log_frame = ttk.LabelFrame(right_frame, text="Tracking Log")
     log_frame.pack(fill='both', expand=True)
-    
-    # Sæt en passende bredde på log området
-    right_frame.configure(width=420)
-    right_frame.pack_propagate(False)
     
     # Log text widget med scrollbar
     log_container = ttk.Frame(log_frame)
