@@ -931,10 +931,10 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
 
         #sæt fokus til start fokus + 1300 hvis filter går fra 0->1
         if i_filter == 1:
-            mount.focuser_goto(start_focus + 1300)
+            #mount.focuser_goto(start_focus + 1300)
             focus_changed = True
         elif i_filter == 0:
-            mount.focuser_goto(start_focus)
+            #mount.focuser_goto(start_focus)
             focus_changed = True
          # skift mellem filtrer efter hver eksponering
         working_on = f"changing to filter {filter_names[i_filter]} - " + TLE[0]
@@ -999,6 +999,9 @@ def take_picture_with_header(camera, mount, exp_time, obstype, satname, tle1, tl
     mount_status_raw = mount.status().raw
     camera_status = camera.get_camera_info()
     camera.wait_for_image()
+    #venter til billede er klar
+    while camera.image_ready() == False:
+        time.sleep(0.1)
     end_time = time.time()
     image_data = camera.read_image()
 
