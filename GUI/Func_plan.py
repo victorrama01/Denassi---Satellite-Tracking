@@ -922,11 +922,32 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     obs_n = 0
     i_filter = 0
 
+    focus_changed = False
+    start_focus = mount.status().focuser.position
     #loop indtil observation er færdig
     while time.time() < end_time:
+
+        #sæt fokus til start fokus + 1300 hvis filter går fra 0->1
+        if i_filter == 1:
+            mount.focuser_goto(start_focus + 1300)
+            focus_changed = True
+        elif i_filter == 0:
+            mount.focuser_goto(start_focus)
+            focus_changed = True
          # skift mellem filtrer efter hver eksponering
+        working_on = f"changing to filter {filter_names[i_filter]} - " + TLE[0]
         camera.set_filter(i_filter)
          # Tag Billede og dem header
+        
+        #hvis vi har ændret fokus, vent på at mount.status().focuser.is_moving er falsk
+        if focus_changed:
+            working_on = "waiting for focuser to finish moving - " + TLE[0]
+            while mount.status().focuser.is_moving:
+                time.sleep(0.2)
+            focus_changed = False
+
+         #hent vejrdata hver 5 billede
+
         working_on = f"taking picture {obs_n:03d} with filter {filter_names[i_filter]} - " + TLE[0]
         take_picture_with_header(
             camera=camera,
