@@ -876,6 +876,7 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
 
     #Enable axis 0 and 1 og disable rotator
     mount.mount_enable(0)
+    mount.mount_enable(0)
     mount.mount_enable(1)
     mount.rotator_disable()
 
@@ -918,7 +919,9 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     wait_for_slew(mount)
     
     #henter liste med filtrers navne
-    filter_names = camera.enumerate_filters()
+    filter_info_list = camera.enumerate_filters()
+    # Extract just the filter names for easy access
+    filter_names = [f['name'] for f in filter_info_list]
     obs_n = 0
     i_filter = 0
 
