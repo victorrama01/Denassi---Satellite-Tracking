@@ -875,8 +875,8 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
         raise
 
     #Enable axis 1 and 2 og disable rotator
+    mount.mount_enable(0)
     mount.mount_enable(1)
-    mount.mount_enable(2)
     mount.rotator_disable()
 
     #Henter vejrdata
