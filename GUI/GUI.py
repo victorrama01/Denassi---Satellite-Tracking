@@ -207,6 +207,11 @@ class TkinterDemo:
         """Wrapper for calculate TLE tab from Func_CalculateTLE"""
         from Func_CalculateTLE import create_calculate_tle_tab as tle_func
         tle_func(self, notebook)
+    
+    def create_plan_observations_tab(self, notebook):
+        """Wrapper for plan observations tab from Func_plan"""
+        from Func_plan import create_plan_observations_tab as plan_func
+        plan_func(self, notebook)
 
     # ================
     # Billedgennemgang Funktioner
