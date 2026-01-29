@@ -358,20 +358,20 @@ class ObservationMonitor:
             if sat_name and sat_time:
                 self.sat_info_label.config(text=f"🛰️ {sat_name} | ⏰ {sat_time}")
             
-            # Opdater billede
+            # Opdater billede KUN hvis image_data er provided
             if image_data is not None:
                 self.update_image_display(image_data)
             
             # Opdater working on
-            if working_on:
+            if working_on is not None:
                 self.working_label.config(text=working_on)
             
             # Opdater weather data
-            if vejrdata:
+            if vejrdata is not None:
                 self.update_weather_display(vejrdata)
             
             # Opdater mount status
-            if mount_status:
+            if mount_status is not None:
                 self.update_mount_display(mount_status)
             
             # Opdater camera status
@@ -388,7 +388,7 @@ class ObservationMonitor:
             print(f"Monitor update error: {e}")
     
     def update_image_display(self, image_data):
-        """Viser downscalet billede"""
+        """Viser downscalet billede med clipping og median-baseret thresholding"""
         try:
             if image_data is None or image_data.size == 0:
                 return
@@ -397,14 +397,26 @@ class ObservationMonitor:
             if isinstance(image_data, np.ndarray):
                 # Handle 2D grayscale
                 if len(image_data.shape) == 2:
+                    # Arbejd på en kopi
+                    img_array = image_data.copy().astype(np.float32)
+                    
+                    # Beregn median og sæt pixels under median + 5 til 0
+                    median_val = np.median(img_array)
+                    threshold = median_val + 5
+                    img_array[img_array < threshold] = 0
+                    
+                    # Clip ved værdi 800
+                    img_array = np.clip(img_array, 0, 800)
+                    
                     # Normalize to 0-255
-                    img_min = image_data.min()
-                    img_max = image_data.max()
+                    img_min = img_array.min()
+                    img_max = img_array.max()
                     if img_max > img_min:
-                        image_data = ((image_data - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+                        img_array = ((img_array - img_min) / (img_max - img_min) * 255).astype(np.uint8)
                     else:
-                        image_data = image_data.astype(np.uint8)
-                    img = Image.fromarray(image_data, mode='L')
+                        img_array = img_array.astype(np.uint8)
+                    
+                    img = Image.fromarray(img_array, mode='L')
                 else:
                     img = Image.fromarray(image_data.astype(np.uint8))
             else:
@@ -831,21 +843,25 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     wait_seconds = start_time - current_time
     working_on = "Waiting for start time - " + TLE[0]
     if monitor:
-        monitor.update_monitor(working_on=working_on)
+        monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
     if wait_seconds > 0:
         time.sleep(wait_seconds)
     
 
     #Lav destination for filer
-    dir_to_subfolder = os.path.join(dir_to_headfolder, NORADID + TLE[0]) + os.sep
+    dir_to_subfolder = os.path.join(dir_to_headfolder, NORADID + '_' +TLE[0]) + os.sep
     #Connect Camera
     working_on = "connecting camera - " + TLE[0]
+    if monitor:
+        monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
     from moravian_camera_official import MoravianCameraOfficial
     global camera_connected
     try:
         camera = MoravianCameraOfficial()
         camera.connect()
         camera_connected = True
+        if monitor:
+            monitor.update_monitor(camera_connected=True, working_on="Camera connected", sat_name=sat_name, sat_time=sat_time)
     except Exception as e:
         print(f"Fejl ved kamera-forbindelse: {e}")
         raise
@@ -861,6 +877,8 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
 
     #Connect Mount
     working_on = "connecting mount - " + TLE[0]
+    if monitor:
+        monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
     try:
         from Official_PWI4_client import PWI4
     except ImportError as e:
@@ -870,6 +888,8 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     try:
         mount = PWI4()
         mount.mount_connect()
+        if monitor:
+            monitor.update_monitor(working_on="Mount connected", sat_name=sat_name, sat_time=sat_time, mount_status=mount.status() if hasattr(mount, 'status') else None)
     except Exception as e:
         print(f"Fejl ved mount-forbindelse: {e}")
         raise
@@ -882,16 +902,22 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     #Henter vejrdata
     vejrdata = hent_vejrdata()
     working_on = "starting observation - " + TLE[0]
+    if monitor:
+        monitor.update_monitor(working_on=working_on, vejrdata=vejrdata, sat_name=sat_name, sat_time=sat_time)
     #Start Mount Tracking
     mount.mount_follow_tle(TLE[0], TLE[1], TLE[2])
     working_on = "sleewing to satellite track - " + TLE[0]
+    if monitor:
+        monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
     #Vent til Slew er færdigt
     wait_for_slew(mount)
     working_on = "taking starfield picture - " + TLE[0]
     if monitor:
-        monitor.update_monitor(working_on=working_on)
+        monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
     #start Tracking af stjerner og tag stjernebillede
+    mount.mount_park()
     mount.mount_tracking_on()
+    time.sleep(0.5)  # Vent et par sekunder for stabilitet
     take_picture_with_header(
         camera=camera,
         mount=mount,
@@ -912,9 +938,13 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
 
     #Start Tracking igen
     working_on = "starting tracking again - " + TLE[0]
+    if monitor:
+        monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
     mount.mount_follow_tle(TLE[0], TLE[1], TLE[2])
     #Vent til Slew er færdigt
     working_on = "waiting for slew to finish - " + TLE[0]
+    if monitor:
+        monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
     wait_for_slew(mount)
     
     #henter liste med filtrers navne
@@ -926,27 +956,35 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
 
     focus_changed = False
     start_focus = mount.status().focuser.position
+    mount.focuser_connect()
+
     #loop indtil observation er færdig
     while time.time() < end_time:
 
         #sæt fokus til start fokus + 1300 hvis filter går fra 0->1
         if i_filter == 1:
-            #mount.focuser_goto(start_focus + 1300)
+            mount.focuser_goto(start_focus + 1300)
             focus_changed = True
         elif i_filter == 0:
-            #mount.focuser_goto(start_focus)
+            mount.focuser_goto(start_focus)
             focus_changed = True
          # skift mellem filtrer efter hver eksponering
         working_on = f"changing to filter {filter_names[i_filter]} - " + TLE[0]
+        if monitor:
+            monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
         camera.set_filter(i_filter)
          # Tag Billede og dem header
         
         #hvis vi har ændret fokus, vent på at mount.status().focuser.is_moving er falsk
         if focus_changed:
             working_on = "waiting for focuser to finish moving - " + TLE[0]
+            if monitor:
+                monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
             while mount.status().focuser.is_moving:
                 time.sleep(0.2)
             focus_changed = False
+        else:
+            time.sleep(2.8) #Vent imens filter skifter
 
          #hent vejrdata hver 5 billede
 
@@ -976,6 +1014,7 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
 
     #disconnect Mount
     mount.mount_disconnect()
+    mount.focuser_disconnect()
     
     #disconnect Camera
     camera.disconnect()
