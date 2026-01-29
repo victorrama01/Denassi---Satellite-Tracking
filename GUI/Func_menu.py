@@ -68,6 +68,9 @@ def create_widgets(self):
     
     # Tab 7: Beregn TLE
     self.create_calculate_tle_tab(notebook)
+    
+    # Tab 8: Plan Observations
+    self.create_plan_observations_tab(notebook)
 
 def update_clock(self):
     """Opdaterer uret og farvekodning hvert sekund"""
