@@ -1025,9 +1025,13 @@ def take_picture_with_header(camera, mount, exp_time, obstype, satname, tle1, tl
     
     # Tilføj kamera data
     for key, value in camera_status.items():
-        # Undgå at overskrive eksisterende felter
-        if key not in header:
-            header[key] = value
+        # Undgå at overskrive eksisterende felter og skip komplekse objekter
+        if key not in header and not isinstance(value, (list, dict)):
+            try:
+                header[key] = value
+            except (TypeError, ValueError):
+                # Skip values that can't be added to FITS header
+                pass
 
     # Save FITS file
     hdu = fits.PrimaryHDU(image_data, header=header)
