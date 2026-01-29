@@ -876,7 +876,6 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
 
     #Enable axis 0 and 1 og disable rotator
     mount.mount_enable(0)
-    mount.mount_enable(0)
     mount.mount_enable(1)
     mount.rotator_disable()
 
