@@ -9,6 +9,12 @@ from PIL import Image, ImageTk
 
 from Func_VejrData import hent_vejrdata
 
+def make_safe_filename(name):
+    """Konverterer satellit navn til et sikkert filnavn/mappennavn"""
+    safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+    safe_name = safe_name.replace(' ', '_')
+    return safe_name
+
 class obs_plan:
     def __init__(self):
         self.satellites = []
@@ -542,6 +548,17 @@ def create_plan_observations_tab(self, notebook):
                                     state='disabled')
     self.stop_plan_btn.pack(side='left', padx=5)
     
+    # Start Focus sektion
+    focus_frame = ttk.Frame(control_frame)
+    focus_frame.pack(pady=5)
+    
+    ttk.Label(focus_frame, text="Start Focus:").pack(side='left', padx=5)
+    self.start_focus_entry = ttk.Entry(focus_frame, width=10)
+    self.start_focus_entry.pack(side='left', padx=5)
+    self.start_focus_entry.insert(0, "12568")  # Default værdi
+    
+    ttk.Label(focus_frame, text="(Standard fokusposition for observationer)").pack(side='left', padx=5)
+    
     # Destinationsmappen sektion
     dest_frame = ttk.LabelFrame(main_container, text="Destinationsmappe")
     dest_frame.pack(fill='x', pady=(0, 10))
@@ -789,6 +806,15 @@ def run_observation_plan(self):
                 exposure = sat.get('ExposureTime', 2.0)
                 dir_folder = self.plan_destination_entry.get()
                 
+                # Hent start focus fra GUI
+                try:
+                    start_focus_value = int(self.start_focus_entry.get())
+                except ValueError:
+                    start_focus_value = None
+                    log_msg = f"  ⚠ Ugyldig start focus værdi, bruger mount position\n"
+                    self.plan_log_text.insert(tk.END, log_msg)
+                    self.plan_log_text.see(tk.END)
+                
                 # Kald Tracking_obs_plan
                 Tracking_obs_plan(
                     binning=binning,
@@ -801,7 +827,8 @@ def run_observation_plan(self):
                     exposure_time=exposure,
                     monitor=self.observation_monitor,
                     sat_name=sat['SatName'],
-                    sat_time=f"{sat['StartTime']} - {sat['EndTime']}"
+                    sat_time=f"{sat['StartTime']} - {sat['EndTime']}",
+                    start_focus=start_focus_value
                 )
                 
                 log_msg = f"  ✓ {sat['SatName']} completed\n"
@@ -836,7 +863,7 @@ def run_observation_plan(self):
 camera_connected = False
 
 def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolder, NORADID, exposure_time, 
-                     monitor=None, sat_name=None, sat_time=None):
+                     monitor=None, sat_name=None, sat_time=None, start_focus=None):
     #vent til start time
     import time
     current_time = time.time()
@@ -849,7 +876,7 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     
 
     #Lav destination for filer
-    dir_to_subfolder = os.path.join(dir_to_headfolder, NORADID + '_' +TLE[0]) + os.sep
+    dir_to_subfolder = os.path.join(dir_to_headfolder, NORADID + '_' + make_safe_filename(TLE[0])) + os.sep
     #Connect Camera
     working_on = "connecting camera - " + TLE[0]
     if monitor:
@@ -888,6 +915,17 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     try:
         mount = PWI4()
         mount.mount_connect()
+        mount.focuser_connect()
+        # Brug den angivne start_focus eller hent fra mount hvis ikke angivet
+        if start_focus is None:
+            start_focus = mount.status().focuser.position
+            print(f"Ingen start focus angivet, bruger nuværende: {start_focus}")
+        else:
+            print(f"Bruger angivet start focus: {start_focus}")
+            # Sæt fokuseren til den angivne position
+            mount.focuser_goto(start_focus)
+            while mount.status().focuser.is_moving:
+                time.sleep(0.2)
         if monitor:
             monitor.update_monitor(working_on="Mount connected", sat_name=sat_name, sat_time=sat_time, mount_status=mount.status() if hasattr(mount, 'status') else None)
     except Exception as e:
@@ -898,6 +936,7 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     mount.mount_enable(0)
     mount.mount_enable(1)
     mount.rotator_disable()
+    camera.set_filter(0)  # Sæt til første filter
 
     #Henter vejrdata
     vejrdata = hent_vejrdata()
@@ -914,10 +953,16 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
     working_on = "taking starfield picture - " + TLE[0]
     if monitor:
         monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
+
+     #henter liste med filtrers navne
+    filter_info_list = camera.enumerate_filters()
+    # Extract just the filter names for easy access
+    filter_names = [f['name'] for f in filter_info_list]
+
     #start Tracking af stjerner og tag stjernebillede
     mount.mount_park()
     mount.mount_tracking_on()
-    time.sleep(0.5)  # Vent et par sekunder for stabilitet
+    time.sleep(2)  # Vent et par sekunder for stabilitet
     take_picture_with_header(
         camera=camera,
         mount=mount,
@@ -927,12 +972,14 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
         tle1=TLE[1],
         tle2=TLE[2],
         norad_id="",
-        filename="stjernehimmel" + TLE[0],
+        filename="stjernehimmel" + make_safe_filename(TLE[0]),
         output_dir=dir_to_subfolder,
         vejrdata=vejrdata,
         monitor=monitor,
         sat_name=sat_name,
-        sat_time=sat_time
+        sat_time=sat_time,
+        working_on=working_on,
+        filter_name=filter_names[0]
     )
 
 
@@ -947,16 +994,12 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
         monitor.update_monitor(working_on=working_on, sat_name=sat_name, sat_time=sat_time)
     wait_for_slew(mount)
     
-    #henter liste med filtrers navne
-    filter_info_list = camera.enumerate_filters()
-    # Extract just the filter names for easy access
-    filter_names = [f['name'] for f in filter_info_list]
+
     obs_n = 0
     i_filter = 0
 
     focus_changed = False
-    start_focus = mount.status().focuser.position
-    mount.focuser_connect()
+    # start_focus er allerede hentet lige efter mount forbindelse
 
     #loop indtil observation er færdig
     while time.time() < end_time:
@@ -998,19 +1041,21 @@ def Tracking_obs_plan(binning, gain, TLE, start_time, end_time, dir_to_headfolde
             tle1=TLE[1],
             tle2=TLE[2],
             norad_id=NORADID,
-            filename=f"{obs_n:03d}_" + TLE[0] +"_"+ NORADID + "_" + filter_names[i_filter],
+            filename=f"{obs_n:03d}_" + make_safe_filename(TLE[0]) +"_"+ NORADID + "_" + filter_names[i_filter],
             output_dir=dir_to_subfolder,
             vejrdata=vejrdata,
             monitor=monitor,
             sat_name=sat_name,
             sat_time=sat_time,
             working_on=working_on
+            ,filter_name=filter_names[i_filter]
         )
         obs_n += 1
         i_filter = (i_filter + 1) % n_filters
 
     #Home mount
     mount.mount_find_home()
+    mount.focuser_goto(start_focus)
 
     #disconnect Mount
     mount.mount_disconnect()
@@ -1025,7 +1070,7 @@ def wait_for_slew(mount):
     while mount.status().mount.is_slewing:
         time.sleep(0.5)
 
-def take_picture_with_header(camera, mount, exp_time, obstype, satname, tle1, tle2, norad_id, filename, output_dir, vejrdata=None, monitor=None, sat_name=None, sat_time=None, working_on=None):
+def take_picture_with_header(camera, mount, exp_time, obstype, satname, tle1, tle2, norad_id, filename, output_dir, vejrdata=None, monitor=None, sat_name=None, sat_time=None, working_on=None, filter_name=None):
     import time
     from astropy.io import fits
     from FitsHeader import add_pwi4_data_to_header
@@ -1054,6 +1099,7 @@ def take_picture_with_header(camera, mount, exp_time, obstype, satname, tle1, tl
     header['DATE-STA'] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(start_time))
     header['DATE-OBS'] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(obs_time))
     header['DATE-END'] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(end_time))
+    header['FILTER'] = filter_name
 
     if vejrdata is not None:
         header['cloud_te'] = vejrdata.get('clouds', float('nan'))
@@ -1065,15 +1111,59 @@ def take_picture_with_header(camera, mount, exp_time, obstype, satname, tle1, tl
     # Tilføj alle PWI4 data med korrekte key-navne
     header = add_pwi4_data_to_header(header, mount_status_raw)
     
-    # Tilføj kamera data
+    # Dictionary til at mappe kamera nøgler til korte FITS-kompatible navne (max 8 tegn)
+    camera_key_mapping = {
+        'description': 'CAMDESC',
+        'manufacturer': 'CAMMFG',
+        'serial': 'CAMSER',
+        'chip_description': 'CAMCHIP',
+        'width': 'CAMW',
+        'height': 'CAMH',
+        'binning_x': 'CAMBINX',
+        'binning_y': 'CAMBINY',
+        'temperature': 'CAMTEMP',
+        'pixel_width': 'CAMPIXW',
+        'pixel_height': 'CAMPIXH',
+        'max_binning_x': 'CAMMAXBX',
+        'max_binning_y': 'CAMMAXBY',
+        'current_gain': 'CAMGAIN',
+        'max_gain': 'CAMMAXG',
+        'gain_db': 'CAMGDB',
+        'gain_times': 'CAMGTIMS',
+        'filter_count': 'CAMFILT',
+        'firmware_major': 'CAMFWV1',
+        'firmware_minor': 'CAMFWV2',
+        'firmware_build': 'CAMFWV3',
+        'driver_major': 'CAMDRV1',
+        'driver_minor': 'CAMDRV2',
+        'driver_build': 'CAMDRV3',
+        'min_exposure': 'CAMMINE',
+        'max_exposure': 'CAMMAXE'
+    }
+    
+    # Tilføj kamera data med forbedret fejlhåndtering
+    camera_keys_added = []
+    camera_keys_skipped = []
+    
     for key, value in camera_status.items():
         # Undgå at overskrive eksisterende felter og skip komplekse objekter
-        if key not in header and not isinstance(value, (list, dict)):
+        if not isinstance(value, (list, dict)) and value is not None:
             try:
-                header[key] = value
-            except (TypeError, ValueError):
-                # Skip values that can't be added to FITS header
-                pass
+                # Brug mapping eller fallback til korte navne
+                fits_key = camera_key_mapping.get(key, key.upper()[:8])
+                
+                if fits_key not in header:
+                    header[fits_key] = value
+                    camera_keys_added.append(f"{fits_key}={value}")
+                else:
+                    camera_keys_skipped.append(f"{key}: Nøgle {fits_key} findes allerede")
+            except (TypeError, ValueError) as e:
+                camera_keys_skipped.append(f"{key}: {str(e)}")
+        else:
+            if isinstance(value, (list, dict)):
+                camera_keys_skipped.append(f"{key}: Komplekst objekt")
+            elif value is None:
+                camera_keys_skipped.append(f"{key}: None værdi")
 
     # Save FITS file
     hdu = fits.PrimaryHDU(image_data, header=header)
