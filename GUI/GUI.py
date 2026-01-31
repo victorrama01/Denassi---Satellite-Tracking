@@ -299,10 +299,10 @@ class TkinterDemo:
         from Func_SatellitListe import fetch_active_tles as func
         return func(self, username, password)
 
-    def fetch_satellite_data_selenium(self, date, lat=55.781553, lng=12.514595, period='morning'):
+    def fetch_satellite_data_selenium(self, date, lat=55.781553, lng=12.514595, period='morning', utc_offset=0):
         """Wrapper for fetch_satellite_data_selenium from Func_SatellitListe"""
         from Func_SatellitListe import fetch_satellite_data_selenium as func
-        return func(self, date, lat, lng, period)
+        return func(self, date, lat, lng, period, utc_offset=utc_offset)
 
     def fetch_satellite_data_with_tle(self, date, username, password, lat=55.781553, lng=12.514595, period='morning', utc_offset=2):
         """Wrapper for fetch_satellite_data_with_tle from Func_SatellitListe"""

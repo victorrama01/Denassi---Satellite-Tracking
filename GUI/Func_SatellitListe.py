@@ -12,6 +12,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 
 # Optional dependencies
@@ -153,12 +154,12 @@ def create_satellite_tab(self, notebook):
     result_frame.pack(fill='both', expand=True)
     
     # Treeview til at vise resultater
-    columns = ('SatName', 'NORAD', 'StartTime', 'HiTime', 'EndTime', 'HiAlt', 'Magnitude', 'TLE1', 'TLE2')
+    columns = ('SatName', 'NORAD', 'StartTime', 'HiTime', 'EndTime', 'HiAlt', 'Mag_Rise', 'Mag_High', 'Mag_Set', 'TLE1', 'TLE2')
     self.satellite_tree = ttk.Treeview(result_frame, columns=columns, show='headings', height=15)
     
     # Definer kolonner
     column_widths = {'SatName': 150, 'NORAD': 80, 'StartTime': 80, 'HiTime': 80, 
-                    'EndTime': 80, 'HiAlt': 60, 'Magnitude': 80, 'TLE1': 200, 'TLE2': 200}
+                    'EndTime': 80, 'HiAlt': 60, 'Mag_Rise': 60, 'Mag_High': 60, 'Mag_Set': 60, 'TLE1': 200, 'TLE2': 200}
     
     for col in columns:
         self.satellite_tree.heading(col, text=col)
@@ -270,7 +271,7 @@ def fetch_satellites(self):
             messagebox.showerror("Fejl", "Indtast Space-Track login oplysninger")
             return
         
-        self.log_satellite_message(f"Henter data for {date_str}, {period}")
+        self.log_satellite_message(f"Henter data for {date_str}")
         self.log_satellite_message(f"Lokation: {lat:.4f}, {lng:.4f}")
         self.status_label.config(text="Henter satelitdata...")
         self.progress_var.set(20)
@@ -319,7 +320,9 @@ def update_satellite_tree(self):
                 row.get('HiTime', ''),
                 row.get('EndTime', ''),
                 row.get('HiAlt', ''),
-                row.get('Magnitude', ''),
+                row.get('Magnitude_Rise', ''),
+                row.get('Magnitude_High', ''),
+                row.get('Magnitude_Set', ''),
                 row.get('TLE1', '')[:50] + '...' if len(str(row.get('TLE1', ''))) > 50 else row.get('TLE1', ''),
                 row.get('TLE2', '')[:50] + '...' if len(str(row.get('TLE2', ''))) > 50 else row.get('TLE2', '')
             )
@@ -456,8 +459,14 @@ def validate_csv_data(self, df):
             'hialt': 'HiAlt',
             'hi_alt': 'HiAlt',
             'altitude': 'HiAlt',
-            'magnitude': 'Magnitude',
-            'mag': 'Magnitude',
+            'magnitude': 'Magnitude_High',  # Standard magnitude bliver High magnitude
+            'mag': 'Magnitude_High',
+            'magnitude_rise': 'Magnitude_Rise',
+            'mag_rise': 'Magnitude_Rise',
+            'magnitude_high': 'Magnitude_High',
+            'mag_high': 'Magnitude_High',
+            'magnitude_set': 'Magnitude_Set',
+            'mag_set': 'Magnitude_Set',
             'tle1': 'TLE1',
             'tle_1': 'TLE1',
             'tle2': 'TLE2',
@@ -470,6 +479,12 @@ def validate_csv_data(self, df):
             standard_name = column_mapping.get(old_col.lower())
             if standard_name:
                 df_renamed = df_renamed.rename(columns={old_col: standard_name})
+        
+        # Sikr at vi har magnitude kolonne(r)
+        if 'Magnitude_Rise' not in df_renamed.columns and 'Magnitude_High' in df_renamed.columns:
+            df_renamed['Magnitude_Rise'] = df_renamed['Magnitude_High']
+        if 'Magnitude_Set' not in df_renamed.columns and 'Magnitude_High' in df_renamed.columns:
+            df_renamed['Magnitude_Set'] = df_renamed['Magnitude_High']
         
         # Sikr at vi har minimumskolonner
         required_cols = ['SatName', 'NORAD']
@@ -637,127 +652,220 @@ def fetch_active_tles(self, username, password):
     except Exception as e:
         raise Exception(f"Space-Track fejl: {str(e)}")
 
-def fetch_satellite_data_selenium(self, date, lat=55.781553, lng=12.514595, period='morning'):
-    """Henter satellitdata fra Heavens-Above"""
+def fetch_satellites_inthesky(date_str, lat, lng, utc_offset=0):
+    """
+    Fetch satellite passage data from in-the-sky.org
+    
+    Parameters:
+    -----------
+    date_str : str
+        Date in format 'YYYY-MM-DD' or 'DD-MM-YYYY'
+    lat : float
+        Latitude (positive for North, negative for South)
+    lng : float
+        Longitude (positive for East, negative for West)
+    utc_offset : float
+        UTC offset in hours (default: 0 for UTC). Example: -2 for CEST, +1 for CET
+    
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with columns: SatName, NORAD, RiseTime, RiseDirection, RiseAltitude, RiseMagnitude,
+                                HighTime, HighDirection, HighAltitude, HighMagnitude,
+                                SetTime, SetDirection, SetAltitude, SetMagnitude
+        Times are converted to local time based on utc_offset
+    
+    Example:
+    --------
+    df = fetch_satellites_inthesky('2026-01-30', 66.996007, -50.621153, utc_offset=-2)
+    """
+    
+    # Parse date
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+    except:
+        date_obj = datetime.strptime(date_str, '%d-%m-%Y')
+    
+    day, month, year = date_obj.day, date_obj.month, date_obj.year
+    
+    # Create headless browser
     options = webdriver.ChromeOptions()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-
-    # Prøv at bruge WebDriverManager hvis tilgængelig
-    if WEBDRIVER_MANAGER_AVAILABLE:
-        try:
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=options)
-        except Exception as e:
-            # Hvis WebDriverManager fejler, prøv standard metode
-            print(f"WebDriverManager fejlede: {e}")
-            try:
-                driver = webdriver.Chrome(options=options)
-            except Exception as chrome_error:
-                raise Exception(f"Chrome WebDriver fejl. Installer chromedriver eller kør: pip install webdriver-manager. Fejl: {chrome_error}")
-    else:
-        # Fallback til standard Chrome driver
-        try:
-            driver = webdriver.Chrome(options=options)
-        except Exception as chrome_error:
-            raise Exception(f"Chrome WebDriver ikke fundet. Installer webdriver-manager med: pip install webdriver-manager. Fejl: {chrome_error}")
     
     try:
-        url = f"https://www.heavens-above.com/AllSats.aspx?lat={lat}&lng={lng}&date={date}"
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
+    except Exception as e:
+        raise Exception(f"Chrome WebDriver fejl: {e}")
+    
+    try:
+        # Step 1: Set location via location.php form (always use UTC in browser, will convert locally)
+        driver.get("https://in-the-sky.org/location.php")
+        time.sleep(1)
+        
+        tz_str = "+00:00"  # Always fetch in UTC, convert locally
+        driver.execute_script(f"""
+            document.querySelector('input[name="latitude"]').value = '{lat}';
+            document.querySelector('input[name="longitude"]').value = '{lng}';
+            document.querySelector('input[name="timezone"]').value = '{tz_str}';
+        """)
+        time.sleep(0.5)
+        
+        driver.execute_script("""
+            document.querySelectorAll('input[type="submit"]')
+                .forEach(btn => btn.value.includes('custom') && btn.click());
+        """)
+        time.sleep(2)
+        
+        # Step 2: Fetch satpasses data
+        url = f"https://in-the-sky.org/satpasses.php?day={day}&month={month}&year={year}&mag=500&anysat=v0&group=1&s="
         driver.get(url)
-        wait = WebDriverWait(driver, 10)
-
-        try:
-            exclude_box = wait.until(EC.presence_of_element_located((By.ID, "ctl00_cph1_chkExcludeStarlink")))
-            if exclude_box.is_selected():
-                driver.execute_script("arguments[0].click();", exclude_box)
-                time.sleep(0.5)
-        except Exception:
-            pass
-
-        radio_id = {
-            'morning': "ctl00_cph1_TimeSelectionControl1_radioAMPM_0",
-            'evening': "ctl00_cph1_TimeSelectionControl1_radioAMPM_1"
-        }[period.lower()]
-
-        radio = wait.until(EC.presence_of_element_located((By.ID, radio_id)))
-        driver.execute_script("arguments[0].scrollIntoView(true);", radio)
-        driver.execute_script("arguments[0].click();", radio)
-
-        update_button = driver.find_element(By.ID, "ctl00_cph1_TimeSelectionControl1_btnSubmit")
-        driver.execute_script("arguments[0].scrollIntoView(true);", update_button)
-        driver.execute_script("arguments[0].click();", update_button)
-
-        time.sleep(1) # Vent for opdatering
-
+        time.sleep(3)
+        
+        # Step 3: Parse HTML
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        table = soup.find('table', {'class': 'standardTable'})
-        rows = table.find_all('tr')[1:]
-
-        data = []
-        for row in rows:
+        tables = soup.find_all('table')
+        
+        if len(tables) < 2:
+            return None
+        
+        # Step 4: Extract data
+        satellites = []
+        for row in tables[1].find_all('tr')[2:]:
             cols = row.find_all('td')
-            if len(cols) >= 10:
-                onclick_attr = row.get('onclick', '')
-                norad_id = None
-                if onclick_attr:
-                    match = re.search(r"satid=(\d+)", onclick_attr)
-                    if match:
-                        norad_id = int(match.group(1))
-
-                data.append({
-                    'SatName': cols[0].text.strip(),
-                    'Magnitude': cols[1].text.strip(),
-                    'StartTime': cols[2].text.strip(),
-                    'StartAlt': cols[3].text.strip(),
-                    'StartAz': cols[4].text.strip(),
-                    'HiTime': cols[5].text.strip(),
-                    'HiAlt': cols[6].text.strip(),
-                    'HiAz': cols[7].text.strip(),
-                    'EndTime': cols[8].text.strip(),
-                    'EndAlt': cols[9].text.strip(),
-                    'EndAz': cols[10].text.strip() if len(cols) > 10 else None,
-                    'NORAD': norad_id,
-                    'Period': period.capitalize()
-                })
-
-        df = pd.DataFrame(data)
-        df['NORAD'] = df['NORAD'].astype('Int64')
-
-        # Tidsformattering og oprydning som i din originale kode
-        time_cols = ['StartTime', 'HiTime', 'EndTime']
-        for col in time_cols:
-            # Gem original string data for fallback
-            original_col = df[col].str.strip()
-            # Prøv først %H:%M:%S (standard Heavens-Above format), derefter %H:%M som fallback
-            df[col] = pd.to_datetime(original_col, format='%H:%M:%S', errors='coerce')
-            # Hvis nogle værdier er NaN, prøv at parse de originale strenge med %H:%M
-            mask = df[col].isna()
-            if mask.any():
-                df.loc[mask, col] = pd.to_datetime(original_col[mask], format='%H:%M', errors='coerce')
-            # Ikke tilføj fast tidsforskydning her - det gøres i GUI baseret på brugerens valg
-            df[col] = df[col].dt.strftime('%H:%M:%S')
-
-        df = df.iloc[1:]
-
-        cols_to_clean = ['StartAlt', 'StartAz', 'HiAlt', 'HiAz', 'EndAlt', 'EndAz']
-        for col in cols_to_clean:
-            df[col] = df[col].str.replace('°', '', regex=False).str.strip()
-
-        df['StartAz'] = df['StartAz'].str.replace('Ø', 'E').str.replace('V', 'W')
-        df['HiAz'] = df['HiAz'].str.replace('Ø', 'E').str.replace('V', 'W')
-        df['EndAz'] = df['EndAz'].str.replace('Ø', 'E').str.replace('V', 'W')
-
-        df = df.drop(columns=['Period'])
-        df = df.reset_index(drop=True)
-        return df
-
+            
+            if len(cols) < 15:
+                continue
+            
+            # Extract satellite name and NORAD ID
+            sat_cell = cols[0]
+            sat_name = sat_cell.get_text().strip()
+            norad_id = None
+            
+            if link := sat_cell.find('a'):
+                sat_name = link.get_text().strip()
+                if match := re.search(r'id=(\d+)', link.get('href', '')):
+                    norad_id = int(match.group(1))
+            
+            # Extract times and data
+            col_texts = [col.get_text().strip() for col in cols]
+            
+            # Parse times and apply UTC offset
+            rise_time_str = col_texts[2]
+            high_time_str = col_texts[6]
+            set_time_str = col_texts[10]
+            
+            # Convert times from UTC to local time using utc_offset
+            rise_time = pd.to_datetime(rise_time_str, format='%H:%M:%S', errors='coerce')
+            high_time = pd.to_datetime(high_time_str, format='%H:%M:%S', errors='coerce')
+            set_time = pd.to_datetime(set_time_str, format='%H:%M:%S', errors='coerce')
+            
+            if pd.notna(rise_time):
+                rise_time = rise_time + pd.Timedelta(hours=utc_offset)
+            if pd.notna(high_time):
+                high_time = high_time + pd.Timedelta(hours=utc_offset)
+            if pd.notna(set_time):
+                set_time = set_time + pd.Timedelta(hours=utc_offset)
+            
+            # Format back to time strings
+            rise_time_str = rise_time.strftime('%H:%M:%S') if pd.notna(rise_time) else col_texts[2]
+            high_time_str = high_time.strftime('%H:%M:%S') if pd.notna(high_time) else col_texts[6]
+            set_time_str = set_time.strftime('%H:%M:%S') if pd.notna(set_time) else col_texts[10]
+            
+            satellites.append({
+                'SatName': sat_name,
+                'NORAD': norad_id,
+                'RiseTime': rise_time_str,
+                'RiseDirection': col_texts[3],
+                'RiseAltitude': col_texts[4].replace('°', '').replace('?', ''),
+                'RiseMagnitude': col_texts[5].replace('°', '').replace('?', ''),
+                'HighTime': high_time_str,
+                'HighDirection': col_texts[7],
+                'HighAltitude': col_texts[8].replace('°', '').replace('?', ''),
+                'HighMagnitude': col_texts[9].replace('°', '').replace('?', ''),
+                'SetTime': set_time_str,
+                'SetDirection': col_texts[11],
+                'SetAltitude': col_texts[12].replace('°', '').replace('?', ''),
+                'SetMagnitude': col_texts[13].replace('°', '').replace('?', ''),
+            })
+        
+        return pd.DataFrame(satellites) if satellites else None
+    
     finally:
         driver.quit()
 
+def fetch_satellite_data_selenium(self, date, lat=55.781553, lng=12.514595, period='morning', utc_offset=0):
+    """
+    Henter satellitdata fra in-the-sky.org og konverterer til Heavens-Above format
+    
+    Parameters:
+    -----------
+    date : str
+        Dato i format 'YYYY-MM-DD' eller 'DD-MM-YYYY'
+    lat : float
+        Breddegrad
+    lng : float
+        Længdegrad
+    period : str
+        Ikke brugt (for backward compatibility) - in-the-sky.org returnerer alle dage
+    utc_offset : float
+        UTC offset i timer (f.eks. -2 for CEST, +1 for CET)
+    
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame med kolonner: SatName, Magnitude_Rise, Magnitude_High, Magnitude_Set,
+                                StartTime, StartAlt, StartAz, HiTime, HiAlt, HiAz,
+                                EndTime, EndAlt, EndAz, NORAD
+        (Bemærk: 3 separate magnitude-værdier i stedet for 1)
+    """
+    try:
+        # Hent data fra in-the-sky.org
+        df_inthesky = fetch_satellites_inthesky(date, lat, lng, utc_offset=utc_offset)
+        
+        if df_inthesky is None or len(df_inthesky) == 0:
+            raise Exception("Ingen satellitdata hentet fra in-the-sky.org")
+        
+        # Konverter til Heavens-Above format, men behold alle 3 magnitude-værdier
+        df = pd.DataFrame({
+            'SatName': df_inthesky['SatName'],
+            'Magnitude_Rise': df_inthesky['RiseMagnitude'],
+            'Magnitude_High': df_inthesky['HighMagnitude'],
+            'Magnitude_Set': df_inthesky['SetMagnitude'],
+            'StartTime': df_inthesky['RiseTime'],
+            'StartAlt': df_inthesky['RiseAltitude'],
+            'StartAz': df_inthesky['RiseDirection'],
+            'HiTime': df_inthesky['HighTime'],
+            'HiAlt': df_inthesky['HighAltitude'],
+            'HiAz': df_inthesky['HighDirection'],
+            'EndTime': df_inthesky['SetTime'],
+            'EndAlt': df_inthesky['SetAltitude'],
+            'EndAz': df_inthesky['SetDirection'],
+            'NORAD': df_inthesky['NORAD']
+        })
+        
+        # Rens data
+        for col in ['StartAlt', 'StartAz', 'HiAlt', 'HiAz', 'EndAlt', 'EndAz']:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.replace('°', '', regex=False).str.strip()
+        
+        # Konverter dansk retningsangivelser til engelsk
+        direction_map = {'Ø': 'E', 'V': 'W'}
+        for col in ['StartAz', 'HiAz', 'EndAz']:
+            if col in df.columns:
+                for dk, en in direction_map.items():
+                    df[col] = df[col].str.replace(dk, en, regex=False)
+        
+        df = df.reset_index(drop=True)
+        return df
+        
+    except Exception as e:
+        raise Exception(f"Fejl ved hentning af satellitdata fra in-the-sky.org: {str(e)}")
+
 def fetch_satellite_data_with_tle(self, date, username, password, lat=55.781553, lng=12.514595, period='morning', utc_offset=2):
-    """Hovedfunktion der kombinerer Heavens-Above og Space-Track data"""
+    """Hovedfunktion der kombinerer in-the-sky.org og Space-Track data"""
     self.progress_var.set(30)
     self.log_satellite_message("Henter aktive TLE'er fra Space-Track...")
     df_TLE = self.fetch_active_tles(username, password)
@@ -767,24 +875,15 @@ def fetch_satellite_data_with_tle(self, date, username, password, lat=55.781553,
     
     self.progress_var.set(60)
 
-    self.log_satellite_message("Henter satellitdata fra Heavens-Above...")
-    df_heavens = self.fetch_satellite_data_selenium(date, lat, lng, period)
-    self.log_satellite_message(f"Hentede {len(df_heavens)} satellitter fra Heavens-Above")
+    self.log_satellite_message(f"Henter satellitdata fra in-the-sky.org (UTC offset: {utc_offset})...")
+    df_heavens = self.fetch_satellite_data_selenium(date, lat, lng, period, utc_offset=utc_offset)
+    self.log_satellite_message(f"Hentede {len(df_heavens)} satellitter fra in-the-sky.org")
 
-    # Tilføj UTC offset til tiderne efter hentning
-    time_cols = ['StartTime', 'HiTime', 'EndTime']
-    self.log_satellite_message(f"Anvender UTC offset på {utc_offset} timer til tiderne")
-
-    for col in time_cols:
-        if col in df_heavens.columns:
-            # Data kommer allerede formateret som %H:%M:%S fra selenium funktionen
-            # så vi parser direkte med det format
-            df_heavens[col] = pd.to_datetime(df_heavens[col], format='%H:%M:%S', errors='coerce')
-            df_heavens[col] = df_heavens[col] + pd.Timedelta(hours=utc_offset)
-            df_heavens[col] = df_heavens[col].dt.strftime('%H:%M:%S')
+    # Bemærk: UTC offset er allerede anvendt i fetch_satellite_data_selenium -> fetch_satellites_inthesky
+    # Så vi skal IKKE tilføje det igen her
     
     self.progress_var.set(80)
-    self.log_satellite_message("Sammenfletter Heavens-Above data med TLE'er...")
+    self.log_satellite_message("Sammenfletter in-the-sky.org data med TLE'er...")
     df_merged = df_heavens.merge(df_TLE, left_on='NORAD', right_on='NORAD_ID', how='left')
     df_merged = df_merged.drop(columns=['NORAD_ID', 'Name'])
     df_merged = df_merged.reset_index(drop=True)
