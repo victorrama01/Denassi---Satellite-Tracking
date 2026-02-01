@@ -692,14 +692,11 @@ def fetch_satellites_inthesky(date_str, lat, lng, utc_offset=0):
     
     # Parse date
     try:
-        print(f"[DEBUG] Parsing date: {date_str}")
         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
     except:
-        print(f"[DEBUG] Trying alternative date format for: {date_str}")
         date_obj = datetime.strptime(date_str, '%d-%m-%Y')
     
     day, month, year = date_obj.day, date_obj.month, date_obj.year
-    print(f"[DEBUG] Extracted date: {day}/{month}/{year}")
     
     # Create headless browser
     options = webdriver.ChromeOptions()
@@ -709,70 +706,45 @@ def fetch_satellites_inthesky(date_str, lat, lng, utc_offset=0):
     
     driver = None
     try:
-        print("[DEBUG] Initializing ChromeDriver...")
         service = Service(ChromeDriverManager().install())
-        print("[DEBUG] ChromeDriver service created, launching browser...")
         driver = webdriver.Chrome(service=service, options=options)
         wait = WebDriverWait(driver, 20)
-        print("[DEBUG] Browser launched successfully")
     except Exception as e:
-        print(f"[ERROR] Chrome WebDriver fejl: {type(e).__name__}: {e}")
         raise Exception(f"Chrome WebDriver fejl: {e}")
     
     try:
         # Step 1: Set location via location.php form
-        print("[DEBUG] Step 1: Navigating to location.php...")
         driver.get("https://in-the-sky.org/location.php")
-        print("[DEBUG] location.php loaded successfully")
         
         tz_str = "+00:00"  # Always fetch in UTC, convert locally
-        print(f"[DEBUG] Setting location: lat={lat}, lng={lng}")
         driver.execute_script(f"""
             document.querySelector('input[name="latitude"]').value = '{lat}';
             document.querySelector('input[name="longitude"]').value = '{lng}';
             document.querySelector('input[name="timezone"]').value = '{tz_str}';
         """)
-        print("[DEBUG] Location values set in form")
         
         driver.execute_script("""
             document.querySelectorAll('input[type="submit"]')
                 .forEach(btn => btn.value.includes('custom') && btn.click());
         """)
-        print("[DEBUG] Location form submitted")
         
         # Step 2: Fetch satpasses data
-        print(f"[DEBUG] Step 2: Navigating to satpasses.php for {day}/{month}/{year}...")
         url = f"https://in-the-sky.org/satpasses.php?day={day}&month={month}&year={year}&mag=500&anysat=v0&group=1&s="
         driver.get(url)
-        print("[DEBUG] satpasses.php loaded successfully")
         
         # Step 2b: Check "Include daylight passes" checkbox and update table
         try:
-            print("[DEBUG] Step 2b: Looking for daylight checkbox...")
             daylight_checkbox = driver.find_element(By.NAME, "dl")
-            print("[DEBUG] Daylight checkbox found")
             
             driver.execute_script("arguments[0].scrollIntoView(true);", daylight_checkbox)
             driver.execute_script("arguments[0].click();", daylight_checkbox)
-            print("[DEBUG] Daylight checkbox clicked")
             
-            # WAIT FOR PAGE TO FULLY LOAD - since site uses JavaScript
-            print("[DEBUG] Waiting for page to fully render with JavaScript...")
+            # Wait for page to fully render with JavaScript
             import time
-            time.sleep(3)  # Give JavaScript time to run
+            time.sleep(3)
             
-            # Wait for the satellite data table to appear
+            # Find and click the "Update Table" button
             try:
-                print("[DEBUG] Waiting for satellite table to load...")
-                # Look for table with satellite data (usually has many rows)
-                wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "table")) > 1)
-                print("[DEBUG] Satellite table detected")
-            except:
-                print("[DEBUG] Table detection timeout, continuing anyway...")
-            
-            # Find and click the "Update Table" button to refresh data
-            try:
-                print("[DEBUG] Looking for Update Table button...")
                 update_btn = None
                 
                 buttons = driver.find_elements(By.TAG_NAME, "input")
@@ -784,80 +756,39 @@ def fetch_satellites_inthesky(date_str, lat, lng, utc_offset=0):
                             break
                 
                 if update_btn:
-                    print("[DEBUG] Update button found, clicking...")
                     driver.execute_script("arguments[0].scrollIntoView(true);", update_btn)
                     driver.execute_script("arguments[0].click();", update_btn)
-                    time.sleep(4)  # Wait longer for data to reload
-                    print("[DEBUG] Update button clicked, waiting for page to reload...")
+                    time.sleep(4)
                 else:
-                    print("[DEBUG] Update button not found, waiting for page to load naturally...")
                     time.sleep(5)
                         
             except Exception as e:
-                print(f"[WARNING] Could not click update button: {type(e).__name__}: {e}")
                 time.sleep(3)
                 
         except Exception as e:
-            print(f"[WARNING] Could not handle daylight checkbox: {type(e).__name__}: {e}")
+            pass
         
         # Step 3: Parse HTML
-        print("[DEBUG] Step 3: Parsing HTML page source...")
-        
-        # Save HTML to file for inspection
-        import time
-        timestamp = time.strftime('%Y%m%d_%H%M%S')
-        html_file = f"debug_page_{timestamp}.html"
-        with open(html_file, 'w', encoding='utf-8') as f:
-            f.write(driver.page_source)
-        print(f"[DEBUG] HTML saved to: {html_file}")
-        
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         tables = soup.find_all('table')
-        print(f"[DEBUG] Found {len(tables)} tables on page")
-        
-        # Debug: Print ALL table information
-        for idx, table in enumerate(tables):
-            rows = table.find_all('tr')
-            print(f"[DEBUG] Table {idx}: {len(rows)} rows")
-            if idx <= 2:  # Show details for first 3 tables
-                if len(rows) > 0:
-                    first_row_text = rows[0].get_text()[:200]
-                    print(f"[DEBUG]   First row content: {first_row_text}")
         
         if len(tables) < 2:
-            print("[ERROR] Not enough tables found on page (need at least 2)")
             return None
         
         table_rows = tables[1].find_all('tr')
-        print(f"[DEBUG] Table 1 has {len(table_rows)} rows total")
-        
-        # Print header to understand structure
-        if len(table_rows) > 0:
-            header_cols = table_rows[0].find_all('th')
-            if not header_cols:
-                header_cols = table_rows[0].find_all('td')
-            print(f"[DEBUG] Header columns: {[col.get_text().strip() for col in header_cols[:5]]}...")
         
         # Check if we have data rows (skip first 2 rows which are typically headers)
         data_rows = table_rows[2:] if len(table_rows) > 2 else []
-        print(f"[DEBUG] Data rows (after skipping headers): {len(data_rows)}")
         
         if len(data_rows) == 0:
-            print("[WARNING] No data rows found in table!")
-            print("[DEBUG] All table rows:")
-            for idx, row in enumerate(table_rows):
-                cols = row.find_all('td')
-                print(f"  Row {idx}: {len(cols)} columns - {row.get_text()[:100]}")
             return None
         
         # Step 4: Extract data
-        print("[DEBUG] Step 4: Extracting satellite data...")
         satellites = []
         for idx, row in enumerate(data_rows):
             cols = row.find_all('td')
             
             if len(cols) < 15:
-                print(f"[DEBUG] Row {idx} skipped (only {len(cols)} columns)")
                 continue
             
             # Extract satellite name and NORAD ID
@@ -912,19 +843,13 @@ def fetch_satellites_inthesky(date_str, lat, lng, utc_offset=0):
                 'SetMagnitude': col_texts[13].replace('°', '').replace('?', ''),
             })
         
-        print(f"[DEBUG] Extracted {len(satellites)} satellites successfully")
         return pd.DataFrame(satellites) if satellites else None
     
     except Exception as e:
-        print(f"[ERROR] Exception during data fetch: {type(e).__name__}: {e}")
-        import traceback
-        print(f"[ERROR] Traceback: {traceback.format_exc()}")
         raise
     finally:
         if driver:
-            print("[DEBUG] Closing browser...")
             driver.quit()
-            print("[DEBUG] Browser closed")
 
 def fetch_satellite_data_with_tle(self, date, username, password, lat=55.781553, lng=12.514595, utc_offset=2):
     """Hovedfunktion der kombinerer in-the-sky.org, Space-Track og satcat data
