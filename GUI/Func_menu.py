@@ -99,14 +99,25 @@ def update_satellite_colors(self):
             start_time = values[2]  # StartTime kolonne
             end_time = values[4]    # EndTime kolonne
             
-            # Beregn ny status
-            status = self.get_satellite_status(start_time, end_time, selected_date)
+            # Beregn ny status (med pre-parsed data for optimering)
+            from datetime import datetime
+            try:
+                selected_date_obj = datetime.strptime(selected_date, '%Y-%m-%d').date()
+            except:
+                selected_date_obj = datetime.now().date()
+            
+            current_time = datetime.now()
+            status = self.get_satellite_status(start_time, end_time, selected_date_obj, current_time)
             
             # Opdater farvetag for denne række
             self.satellite_tree.item(item, tags=(status,))
 
 def sort_dataframe_by_starttime(self, df):
-    """Sorterer DataFrame efter StartTime"""
+    """Sorterer DataFrame efter Day (1,2) og derefter StartTime
+    
+    Sikrer at dag 1 satellitter vises før dag 2 satellitter,
+    selvom dag 2 har mindre klokkeslag værdier.
+    """
     import pandas as pd
     if df is None or df.empty:
         return df
@@ -123,8 +134,12 @@ def sort_dataframe_by_starttime(self, df):
             if df_sorted['StartTime_dt'].isna().all():
                 df_sorted['StartTime_dt'] = pd.to_datetime(df_sorted['StartTime'], format='%H:%M', errors='coerce')
             
-            # Sorter efter tiden
-            df_sorted = df_sorted.sort_values('StartTime_dt')
+            # Sorter efter Day først (hvis kolonnen eksisterer), derefter efter tiden
+            if 'Day' in df_sorted.columns:
+                df_sorted = df_sorted.sort_values(['Day', 'StartTime_dt'])
+            else:
+                # Fallback til kun tidsortering hvis Day kolonne ikke findes
+                df_sorted = df_sorted.sort_values('StartTime_dt')
             
             # Fjern hjælpekolonnen
             df_sorted = df_sorted.drop(columns=['StartTime_dt'])

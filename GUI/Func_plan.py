@@ -638,7 +638,7 @@ def hent_satellit_til_plan(self):
             'SatName': values[0],
             'NORAD': values[1],
             'StartTime': values[2],
-            'EndTime': values[4],
+            'EndTime': values[8],
             'TLE1': self.get_full_tle_from_selection(item)[0],
             'TLE2': self.get_full_tle_from_selection(item)[1]
         }

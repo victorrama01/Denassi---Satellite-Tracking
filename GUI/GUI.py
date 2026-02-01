@@ -97,6 +97,17 @@ class TkinterDemo:
         # Satelit data variabler
         self.df_merged = None
         self.df_heavens = None
+        self.list_start_datetime = None  # Start tidspunkt for satelitlisten
+        self.list_end_datetime = None    # End tidspunkt for satelitlisten
+        self.warning_update_job = None   # Timer job for warning opdatering
+        
+        # Filter og pagination variabler
+        self.df_filtered = None          # Filtreret satelitdata
+        self.current_page = 0            # Nuværende side (0-indexed)
+        self.page_size = 200             # Antal satellitter per side
+        self.page_size_var = tk.StringVar(value="200")  # Pagination size dropdown
+        self.active_filters = {}         # Dictionary med aktive filtre
+        self.is_filtered = False         # Flag for om filter er aktivt
         
         # LeapFrog variabler
         self.df_leapfrog = None
@@ -254,10 +265,10 @@ class TkinterDemo:
     # ================
     # Satelit Hentning Funktioner - Wrappers
     # ================
-    def get_satellite_status(self, start_time_str, end_time_str, selected_date):
-        """Wrapper for get_satellite_status from Func_SatellitListe"""
+    def get_satellite_status(self, start_time_str, end_time_str, selected_date_obj, current_time):
+        """Wrapper for get_satellite_status from Func_SatellitListe (optimeret)"""
         from Func_SatellitListe import get_satellite_status as func
-        return func(self, start_time_str, end_time_str, selected_date)
+        return func(self, start_time_str, end_time_str, selected_date_obj, current_time)
 
     def fetch_satellites_threaded(self):
         """Wrapper for fetch_satellites_threaded from Func_SatellitListe"""
@@ -299,15 +310,10 @@ class TkinterDemo:
         from Func_SatellitListe import fetch_active_tles as func
         return func(self, username, password)
 
-    def fetch_satellite_data_selenium(self, date, lat=55.781553, lng=12.514595, period='morning', utc_offset=0):
-        """Wrapper for fetch_satellite_data_selenium from Func_SatellitListe"""
-        from Func_SatellitListe import fetch_satellite_data_selenium as func
-        return func(self, date, lat, lng, period, utc_offset=utc_offset)
-
-    def fetch_satellite_data_with_tle(self, date, username, password, lat=55.781553, lng=12.514595, period='morning', utc_offset=2):
+    def fetch_satellite_data_with_tle(self, date, username, password, lat=55.781553, lng=12.514595, utc_offset=2):
         """Wrapper for fetch_satellite_data_with_tle from Func_SatellitListe"""
         from Func_SatellitListe import fetch_satellite_data_with_tle as func
-        return func(self, date, username, password, lat, lng, period, utc_offset)
+        return func(self, date, username, password, lat, lng, utc_offset)
 
     def open_file(self):
         """Wrapper for open_file from Func_SatellitListe"""
@@ -339,6 +345,61 @@ class TkinterDemo:
         """Wrapper: Tilføj besked til satelit loggen med tidsstempel"""
         from Func_KameraInstillinger import log_satellite_message as func
         return func(self, message)
+    
+    def update_satellite_list_warning(self):
+        """Wrapper: Opdater warning label for satelitlisten"""
+        from Func_SatellitListe import update_satellite_list_warning as func
+        return func(self)
+    
+    def schedule_warning_update(self):
+        """Wrapper: Planlæg warning update hver 5. minut"""
+        from Func_SatellitListe import schedule_warning_update as func
+        return func(self)
+    
+    def extract_metadata_from_csv(self, filename):
+        """Wrapper: Læs metadata fra CSV-fil"""
+        from Func_SatellitListe import extract_metadata_from_csv as func
+        return func(self, filename)
+    
+    def open_filter_dialog(self):
+        """Wrapper: Åbn filter dialog"""
+        from Func_SatellitListe import open_filter_dialog as func
+        return func(self)
+    
+    def apply_filter(self, filters):
+        """Wrapper: Anvend satellitfilter"""
+        from Func_SatellitListe import apply_filter as func
+        return func(self, filters)
+    
+    def reset_filter(self):
+        """Wrapper: Nulstil filter"""
+        from Func_SatellitListe import reset_filter as func
+        return func(self)
+    
+    def update_page_display(self):
+        """Wrapper: Opdater treeview for aktuel side"""
+        from Func_SatellitListe import update_page_display as func
+        return func(self)
+    
+    def prev_page(self):
+        """Wrapper: Gå til forrige side"""
+        from Func_SatellitListe import prev_page as func
+        return func(self)
+    
+    def next_page(self):
+        """Wrapper: Gå til næste side"""
+        from Func_SatellitListe import next_page as func
+        return func(self)
+    
+    def sort_treeview_by_column(self, col):
+        """Wrapper: Sorter treeview efter valgt kolonne"""
+        from Func_SatellitListe import sort_treeview_by_column as func
+        return func(self, col)
+    
+    def update_header_sort_indicators(self, sorted_col):
+        """Wrapper: Opdater headers for at vise sorterings-retning"""
+        from Func_SatellitListe import update_header_sort_indicators as func
+        return func(self, sorted_col)
     
     def connect_camera(self):
         """Wrapper: Tilslut til Moravian kamera"""
