@@ -756,7 +756,21 @@ def fetch_satellites_inthesky(date_str, lat, lng, utc_offset=0):
             driver.execute_script("arguments[0].click();", daylight_checkbox)
             print("[DEBUG] Daylight checkbox clicked")
             
-            # Find and click the "Update Table" button
+            # WAIT FOR PAGE TO FULLY LOAD - since site uses JavaScript
+            print("[DEBUG] Waiting for page to fully render with JavaScript...")
+            import time
+            time.sleep(3)  # Give JavaScript time to run
+            
+            # Wait for the satellite data table to appear
+            try:
+                print("[DEBUG] Waiting for satellite table to load...")
+                # Look for table with satellite data (usually has many rows)
+                wait.until(lambda d: len(d.find_elements(By.CSS_SELECTOR, "table")) > 1)
+                print("[DEBUG] Satellite table detected")
+            except:
+                print("[DEBUG] Table detection timeout, continuing anyway...")
+            
+            # Find and click the "Update Table" button to refresh data
             try:
                 print("[DEBUG] Looking for Update Table button...")
                 update_btn = None
@@ -773,18 +787,15 @@ def fetch_satellites_inthesky(date_str, lat, lng, utc_offset=0):
                     print("[DEBUG] Update button found, clicking...")
                     driver.execute_script("arguments[0].scrollIntoView(true);", update_btn)
                     driver.execute_script("arguments[0].click();", update_btn)
-                    wait.until(EC.staleness_of(update_btn))
-                    print("[DEBUG] Update button clicked and page reloaded")
+                    time.sleep(4)  # Wait longer for data to reload
+                    print("[DEBUG] Update button clicked, waiting for page to reload...")
                 else:
-                    print("[DEBUG] Update button not found by text, trying fallback...")
-                    submit_buttons = driver.find_elements(By.CSS_SELECTOR, "input[type='submit']")
-                    if submit_buttons:
-                        driver.execute_script("arguments[0].click();", submit_buttons[0])
-                        wait.until(EC.staleness_of(submit_buttons[0]))
-                        print("[DEBUG] Fallback: Clicked first submit button")
+                    print("[DEBUG] Update button not found, waiting for page to load naturally...")
+                    time.sleep(5)
                         
             except Exception as e:
                 print(f"[WARNING] Could not click update button: {type(e).__name__}: {e}")
+                time.sleep(3)
                 
         except Exception as e:
             print(f"[WARNING] Could not handle daylight checkbox: {type(e).__name__}: {e}")
