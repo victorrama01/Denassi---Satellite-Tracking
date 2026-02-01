@@ -791,20 +791,58 @@ def fetch_satellites_inthesky(date_str, lat, lng, utc_offset=0):
         
         # Step 3: Parse HTML
         print("[DEBUG] Step 3: Parsing HTML page source...")
+        
+        # Save HTML to file for inspection
+        import time
+        timestamp = time.strftime('%Y%m%d_%H%M%S')
+        html_file = f"debug_page_{timestamp}.html"
+        with open(html_file, 'w', encoding='utf-8') as f:
+            f.write(driver.page_source)
+        print(f"[DEBUG] HTML saved to: {html_file}")
+        
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         tables = soup.find_all('table')
         print(f"[DEBUG] Found {len(tables)} tables on page")
+        
+        # Debug: Print ALL table information
+        for idx, table in enumerate(tables):
+            rows = table.find_all('tr')
+            print(f"[DEBUG] Table {idx}: {len(rows)} rows")
+            if idx <= 2:  # Show details for first 3 tables
+                if len(rows) > 0:
+                    first_row_text = rows[0].get_text()[:200]
+                    print(f"[DEBUG]   First row content: {first_row_text}")
         
         if len(tables) < 2:
             print("[ERROR] Not enough tables found on page (need at least 2)")
             return None
         
-        print(f"[DEBUG] Table 1 has {len(tables[1].find_all('tr'))} rows")
+        table_rows = tables[1].find_all('tr')
+        print(f"[DEBUG] Table 1 has {len(table_rows)} rows total")
+        
+        # Print header to understand structure
+        if len(table_rows) > 0:
+            header_cols = table_rows[0].find_all('th')
+            if not header_cols:
+                header_cols = table_rows[0].find_all('td')
+            print(f"[DEBUG] Header columns: {[col.get_text().strip() for col in header_cols[:5]]}...")
+        
+        # Check if we have data rows (skip first 2 rows which are typically headers)
+        data_rows = table_rows[2:] if len(table_rows) > 2 else []
+        print(f"[DEBUG] Data rows (after skipping headers): {len(data_rows)}")
+        
+        if len(data_rows) == 0:
+            print("[WARNING] No data rows found in table!")
+            print("[DEBUG] All table rows:")
+            for idx, row in enumerate(table_rows):
+                cols = row.find_all('td')
+                print(f"  Row {idx}: {len(cols)} columns - {row.get_text()[:100]}")
+            return None
         
         # Step 4: Extract data
         print("[DEBUG] Step 4: Extracting satellite data...")
         satellites = []
-        for idx, row in enumerate(tables[1].find_all('tr')[2:]):
+        for idx, row in enumerate(data_rows):
             cols = row.find_all('td')
             
             if len(cols) < 15:
